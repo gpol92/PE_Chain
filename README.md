@@ -6,3 +6,10 @@ Example of usage (--warning let's you to suppress the info messages given by coc
 
 Example of output
 > [OK] Dot product value equal to expected (2)
+
+Negative value test
+
+```python test_pe.py --no-positive --warning```
+
+Output
+> [OK] Dot product value equal to expected (-2)
