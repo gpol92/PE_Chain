@@ -13,3 +13,10 @@ Negative value test
 
 Output
 > [OK] Dot product value equal to expected (-2)
+
+Zero value test
+
+```python test_pe.py --zero --warning```
+
+Output
+> [OK] Dot product value equal to expected (0)
