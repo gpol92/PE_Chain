@@ -36,3 +36,17 @@ python test_pe.py --version v0 --warning
 python test_pe.py --version v1 --warning
 python test_pe.py --version pe --warning
 ```
+
+## TEST PE_CHAIN
+
+In this paragraph I wil give you examples of usage of the tool to do tests of a pe_chain with two PEs
+
+```bash
+python test_pe.py --passed --zero --pechain
+python test_pe.py --passed --no-positive --pechain
+python test_pe.py --passed --positive --pechain
+```
+
+
+
+```
