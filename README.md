@@ -20,3 +20,19 @@ Zero value test
 
 Output
 > [OK] Dot product value equal to expected (0)
+
+The cocotb harness instantiates the V0 multiplier (`v0_dut`), the V1
+multiply-and-accumulate reference (`v1_dut`), and the actual implementation
+from `pe.sv` (`pe_dut`). By default all three are checked:
+
+```bash
+python test_pe.py --warning
+```
+
+To check one version only:
+
+```bash
+python test_pe.py --version v0 --warning
+python test_pe.py --version v1 --warning
+python test_pe.py --version pe --warning
+```

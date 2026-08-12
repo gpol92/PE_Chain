@@ -3,7 +3,7 @@ module pe #(
 )(
 	input logic signed [DATA_WIDTH-1:0] a,
 	input logic signed [DATA_WIDTH-1:0] b,
-	input logic signed [DATA_WIDTH-1:0] acc_in
+	input logic signed [DATA_WIDTH-1:0] acc_in,
 	output logic signed [(2*DATA_WIDTH)-1:0] y
 );
 	always_comb begin
