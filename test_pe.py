@@ -2,10 +2,14 @@ import cocotb
 from cocotb_tools.runner import get_runner
 from cocotb.triggers import Timer
 from pathlib import Path
-import logging
 import argparse
 import sys
-import os 
+import os
+import logging
+
+# Keep the test output focused on the message emitted for a failed check.
+logging.getLogger("cocotb.regression").setLevel(logging.ERROR)
+test_logger = logging.getLogger(__name__)
 
 mode = argparse.ArgumentParser(description="Set the expected value to make the test pass or fail")
 mode.add_argument(
@@ -65,7 +69,10 @@ async def test_product(dut):
     
     actual_value = dut.y.value.to_signed()
     
-    assert actual_value == expected, f"[FAIL] Dot product different from expected (Got {actual_value}, Expected {expected})"
+    if actual_value != expected:
+        message = f"[FAIL] Dot product different from expected (Got {actual_value}, Expected {expected})"
+        test_logger.error(message)
+        assert actual_value == expected, message
     print(f"[OK] Dot product value equal to expected ({actual_value})")
 
 if __name__ == "__main__":
@@ -81,7 +88,7 @@ if __name__ == "__main__":
     runner.test(
         hdl_toplevel="pe", test_module="test_pe",
         extra_env={
-            "COCOTB_LOG_LEVEL": "WARNING" if args.warning else "INFO",
+            "COCOTB_LOG_LEVEL": "WARNING" if args.warning else "ERROR",
             "GPI_LOG_LEVEL": "ERROR",
             "TEST_PASSED_STATUS": passed_value,
             "TEST_POSITIVE_VALUES": positive_value,
