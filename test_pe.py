@@ -46,17 +46,25 @@ mode.add_argument(
     help="DUT to check (default: all; pe is the implementation in pe.sv)",
 )
 
+mode.add_argument(
+    "--pechain",
+    action="store_true",
+    help="Test only the two-stage pe_chain implementation",
+)
+
 if __name__ == "__main__":
     args = mode.parse_args()
     passed_value = "1" if args.passed else "0"
     positive_value = "1" if args.positive else "0"
     zero_value = "1" if args.zero else "0"
     version_value = args.version
+    pechain_value = "1" if args.pechain else "0"
 else:
     passed_value = "1" 
     positive_value = "1"
     zero_value = "0"
     version_value = "all"
+    pechain_value = "0"
 
 @cocotb.test()
 async def test_product(dut):
@@ -74,9 +82,11 @@ async def test_product(dut):
     if is_passed:
         expected_v0 = a * b
         expected_v1 = a * b + acc_in
+        expected_pechain = a * expected_v1 + acc_in
     else:
         expected_v0 = a * b + 1
         expected_v1 = a * b + acc_in + 1
+        expected_pechain = a * (a * b + acc_in) + acc_in + 1
     
     await Timer(1, unit="ns")
     
@@ -84,9 +94,14 @@ async def test_product(dut):
         "v0": (dut.y_v0, expected_v0),
         "v1": (dut.y_v1, expected_v1),
         "pe": (dut.y_pe, expected_v1),
+        "pechain": (dut.y_pe_chain, expected_pechain),
     }
-    selected_version = os.getenv("TEST_VERSION", "all")
-    selected = checks if selected_version == "all" else {selected_version: checks[selected_version]}
+    if os.getenv("TEST_PECHAIN", "0") == "1":
+        selected = {"pechain": checks["pechain"]}
+    else:
+        selected_version = os.getenv("TEST_VERSION", "all")
+        default_checks = {name: check for name, check in checks.items() if name != "pechain"}
+        selected = default_checks if selected_version == "all" else {selected_version: checks[selected_version]}
     for name, (signal, expected) in selected.items():
         actual_value = signal.value.to_signed()
         if actual_value != expected:
@@ -114,5 +129,6 @@ if __name__ == "__main__":
             "TEST_POSITIVE_VALUES": positive_value,
             "TEST_ZERO_VALUES": zero_value,
             "TEST_VERSION": version_value,
+            "TEST_PECHAIN": pechain_value,
         },
     )
