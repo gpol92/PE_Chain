@@ -42,5 +42,5 @@ module pe_chain #(parameter int DATA_WIDTH = 8) (
 	output logic signed [(2*DATA_WIDTH)-1:0] y
 );
 	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) pe_v1_dut_0 (.a(a), .b(b), .acc_in(acc_in), .y(y_pe_chain));
-	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) pe_v1_dut_1 (.a(a), .b(y_pe_chain[DATA_WIDTH-1:0]), .acc_in(acc_in), .y(y));
+	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) pe_v1_dut_1 (.a(a), .b(b), .acc_in(y_pe_chain[DATA_WIDTH-1:0]), .y(y));
 endmodule

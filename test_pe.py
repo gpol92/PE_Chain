@@ -82,11 +82,11 @@ async def test_product(dut):
     if is_passed:
         expected_v0 = a * b
         expected_v1 = a * b + acc_in
-        expected_pechain = a * expected_v1 + acc_in
+        expected_pechain = a * b + expected_v1
     else:
         expected_v0 = a * b + 1
         expected_v1 = a * b + acc_in + 1
-        expected_pechain = a * (a * b + acc_in) + acc_in + 1
+        expected_pechain = a * b + (a * b + acc_in) + 1
     
     await Timer(1, unit="ns")
     
