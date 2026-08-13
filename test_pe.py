@@ -49,7 +49,7 @@ mode.add_argument(
 mode.add_argument(
     "--pechain",
     action="store_true",
-    help="Test only the two-stage pe_chain implementation",
+    help="Test the manual and parameterized pe_chain implementations",
 )
 
 if __name__ == "__main__":
@@ -82,11 +82,13 @@ async def test_product(dut):
     if is_passed:
         expected_v0 = a * b
         expected_v1 = a * b + acc_in
-        expected_pechain = a * b + expected_v1
+        expected_pechain_2 = acc_in + 2 * a * b
+        expected_pechain_4 = acc_in + 4 * a * b
     else:
         expected_v0 = a * b + 1
         expected_v1 = a * b + acc_in + 1
-        expected_pechain = a * b + (a * b + acc_in) + 1
+        expected_pechain_2 = acc_in + 2 * a * b + 1
+        expected_pechain_4 = acc_in + 4 * a * b + 1
     
     await Timer(1, unit="ns")
     
@@ -94,13 +96,21 @@ async def test_product(dut):
         "v0": (dut.y_v0, expected_v0),
         "v1": (dut.y_v1, expected_v1),
         "pe": (dut.y_pe, expected_v1),
-        "pechain": (dut.y_pe_chain, expected_pechain),
+        "pechain_manual_2": (dut.y_pe_chain_manual_2, expected_pechain_2),
+        "pechain_2": (dut.y_pe_chain_2, expected_pechain_2),
+        "pechain_4": (dut.y_pe_chain_4, expected_pechain_4),
     }
     if os.getenv("TEST_PECHAIN", "0") == "1":
-        selected = {"pechain": checks["pechain"]}
+        selected = {
+            name: check for name, check in checks.items()
+            if name.startswith("pechain_")
+        }
     else:
         selected_version = os.getenv("TEST_VERSION", "all")
-        default_checks = {name: check for name, check in checks.items() if name != "pechain"}
+        default_checks = {
+            name: check for name, check in checks.items()
+            if not name.startswith("pechain_")
+        }
         selected = default_checks if selected_version == "all" else {selected_version: checks[selected_version]}
     for name, (signal, expected) in selected.items():
         actual_value = signal.value.to_signed()
@@ -114,7 +124,11 @@ if __name__ == "__main__":
     project_dir = Path(__file__).resolve().parent
     runner = get_runner("icarus")
     runner.build(
-        sources=[project_dir / "pe.sv", project_dir / "testbench.sv"],
+        sources=[
+            project_dir / "pe.sv",
+            project_dir / "pe_chain.sv",
+            project_dir / "testbench.sv",
+        ],
         hdl_toplevel="pe_testbench",
         always=True,
         timescale=("1ns", "1ps"),
