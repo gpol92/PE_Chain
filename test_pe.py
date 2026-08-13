@@ -52,19 +52,35 @@ mode.add_argument(
     help="Test the manual and parameterized pe_chain implementations",
 )
 
+mode.add_argument(
+    "--arrays",
+    action="store_true",
+    help="With --pechain, test the V4 array implementation",
+)
+
 if __name__ == "__main__":
     args = mode.parse_args()
+    if args.arrays and not args.pechain:
+        mode.error("--arrays requires --pechain")
     passed_value = "1" if args.passed else "0"
     positive_value = "1" if args.positive else "0"
     zero_value = "1" if args.zero else "0"
     version_value = args.version
     pechain_value = "1" if args.pechain else "0"
+    arrays_value = "1" if args.arrays else "0"
 else:
     passed_value = "1" 
     positive_value = "1"
     zero_value = "0"
     version_value = "all"
     pechain_value = "0"
+    arrays_value = "0"
+
+
+def signed_truncate(value, width):
+    raw_value = value & ((1 << width) - 1)
+    sign_bit = 1 << (width - 1)
+    return raw_value - (1 << width) if raw_value & sign_bit else raw_value
 
 @cocotb.test()
 async def test_product(dut):
@@ -78,6 +94,15 @@ async def test_product(dut):
     dut.acc_in.value = acc_in
     
     is_passed = os.getenv("TEST_PASSED_STATUS", "1") == "1"
+
+    data_width = len(dut.a)
+    array_expected = [
+        signed_truncate(a + index, data_width)
+        * signed_truncate(b + index, data_width)
+        for index in range(4)
+    ]
+    if not is_passed:
+        array_expected[0] += 1
 
     if is_passed:
         expected_v0 = a * b
@@ -99,17 +124,27 @@ async def test_product(dut):
         "pechain_manual_2": (dut.y_pe_chain_manual_2, expected_pechain_2),
         "pechain_2": (dut.y_pe_chain_2, expected_pechain_2),
         "pechain_4": (dut.y_pe_chain_4, expected_pechain_4),
+        "pearray_0": (dut.y_pe_array_0, array_expected[0]),
+        "pearray_1": (dut.y_pe_array_1, array_expected[1]),
+        "pearray_2": (dut.y_pe_array_2, array_expected[2]),
+        "pearray_3": (dut.y_pe_array_3, array_expected[3]),
     }
     if os.getenv("TEST_PECHAIN", "0") == "1":
-        selected = {
-            name: check for name, check in checks.items()
-            if name.startswith("pechain_")
-        }
+        if os.getenv("TEST_ARRAYS", "0") == "1":
+            selected = {
+                name: check for name, check in checks.items()
+                if name.startswith("pearray_")
+            }
+        else:
+            selected = {
+                name: check for name, check in checks.items()
+                if name.startswith("pechain_")
+            }
     else:
         selected_version = os.getenv("TEST_VERSION", "all")
         default_checks = {
             name: check for name, check in checks.items()
-            if not name.startswith("pechain_")
+            if not name.startswith(("pechain_", "pearray_"))
         }
         selected = default_checks if selected_version == "all" else {selected_version: checks[selected_version]}
     for name, (signal, expected) in selected.items():
@@ -144,5 +179,6 @@ if __name__ == "__main__":
             "TEST_ZERO_VALUES": zero_value,
             "TEST_VERSION": version_value,
             "TEST_PECHAIN": pechain_value,
+            "TEST_ARRAYS": arrays_value,
         },
     )

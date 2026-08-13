@@ -51,8 +51,16 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_chain_manual_2,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_chain_2,
-	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_chain_4
+	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_chain_4,
+	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_0,
+	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_1,
+	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_2,
+	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_3
 );
+	logic signed [DATA_WIDTH-1:0] array_a [0:3];
+	logic signed [DATA_WIDTH-1:0] array_b [0:3];
+	logic signed [(2*DATA_WIDTH)-1:0] array_y [0:3];
+
 	pe_v0 #(.DATA_WIDTH(DATA_WIDTH)) v0_dut (.a(a), .b(b), .y(y_v0));
 	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) v1_dut (.a(a), .b(b), .acc_in(acc_in), .y(y_v1));
 	// The actual implementation under test; available in cocotb as dut.pe_dut.
@@ -67,4 +75,21 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	pe_chain #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4)) pe_chain_4_dut (
 		.a(a), .b(b), .acc_in(acc_in), .y(y_pe_chain_4)
 	);
+
+	genvar i;
+	generate
+		for (i = 0; i < 4; i++) begin : gen_array_inputs
+			assign array_a[i] = a + i;
+			assign array_b[i] = b + i;
+		end
+	endgenerate
+
+	pe_chain_arrays #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4)) pe_chain_arrays_4_dut (
+		.a(array_a), .b(array_b), .y(array_y)
+	);
+
+	assign y_pe_array_0 = array_y[0];
+	assign y_pe_array_1 = array_y[1];
+	assign y_pe_array_2 = array_y[2];
+	assign y_pe_array_3 = array_y[3];
 endmodule
