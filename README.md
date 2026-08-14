@@ -39,12 +39,17 @@ python test_pe.py --version pe --warning
 
 ## TEST PE_CHAIN
 
-In this paragraph I wil give you examples of usage of the tool to do tests of a pe_chain with two PEs
+In this paragraph I will give you examples of usage of the tool to do tests of a pe_chain with two PEs
 
 ```bash
 python test_pe.py --passed --zero --pechain
 python test_pe.py --passed --no-positive --pechain
 python test_pe.py --passed --positive --pechain
 ```
+Example with pe_chain and calculation with array element by element
+```bash
+python test_pe.py --pechain --arrays --v5 --positive
+```
+
 
 
