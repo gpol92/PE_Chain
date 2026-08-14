@@ -51,3 +51,35 @@ module pe_chain_arrays #(
 		end
 	endgenerate
 endmodule
+
+
+module pe_chain_v5 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 2,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE)
+)(
+	input logic signed [DATA_WIDTH-1:0] a [0:NUM_PE-1],
+	input logic signed [DATA_WIDTH-1:0] b [0:NUM_PE-1],
+	output logic signed [ACC_WIDTH-1:0] y
+);
+	logic signed [ACC_WIDTH-1:0] chain_acc [0:NUM_PE];
+
+	assign chain_acc[0] = '0;
+
+	genvar i;
+	generate
+		for (i = 0; i < NUM_PE; i++) begin : gen_dot_product_pe
+			pe_v5 #(
+				.DATA_WIDTH(DATA_WIDTH),
+				.ACC_WIDTH(ACC_WIDTH)
+			) pe_dut (
+				.a(a[i]),
+				.b(b[i]),
+				.acc_in(chain_acc[i]),
+				.y(chain_acc[i+1])
+			);
+		end
+	endgenerate
+
+	assign y = chain_acc[NUM_PE];
+endmodule
