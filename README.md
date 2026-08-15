@@ -51,5 +51,14 @@ Example with pe_chain and calculation with array element by element
 python test_pe.py --pechain --arrays --v5 --positive
 ```
 
+## FSM test
 
+```bash
+python test_pe.py --pechain --arrays --v9 
+```
+
+Example output
+
+> [OK] V9 FSM completed with expected result (68)
+> [OK] V9 FSM completed with expected result (-60)
 
