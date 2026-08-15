@@ -43,6 +43,8 @@ module pe_chain_manual_2 #(parameter int DATA_WIDTH = 8) (
 endmodule
 
 module pe_testbench #(parameter int DATA_WIDTH = 8) (
+	input logic clk,
+	input logic rst,
 	input logic signed [DATA_WIDTH-1:0] a,
 	input logic signed [DATA_WIDTH-1:0] b,
 	input logic signed [DATA_WIDTH-1:0] acc_in,
@@ -56,7 +58,8 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_1,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_2,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_3,
-	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v5
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v5,
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v6
 );
 	logic signed [DATA_WIDTH-1:0] array_a [0:3];
 	logic signed [DATA_WIDTH-1:0] array_b [0:3];
@@ -90,6 +93,9 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	);
 	pe_chain_v5 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4)) pe_chain_v5_dut (
 		.a(array_a), .b(array_b), .y(y_pe_chain_v5)
+	);
+	pe_chain_v6 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4)) pe_chain_v6_dut (
+		.clk(clk), .rst(rst), .a(array_a), .b(array_b), .y(y_pe_chain_v6)
 	);
 
 	assign y_pe_array_0 = array_y[0];

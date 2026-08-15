@@ -1,6 +1,7 @@
 import cocotb
-from cocotb_tools.runner import get_runner
-from cocotb.triggers import Timer
+from cocotb_tools.runner import get_results, get_runner
+from cocotb.clock import Clock
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
 from pathlib import Path
 import argparse
 import sys
@@ -64,12 +65,22 @@ mode.add_argument(
     help="With --pechain --arrays, test the V5 dot-product chain",
 )
 
+mode.add_argument(
+    "--v6",
+    action="store_true",
+    help="With --pechain --arrays, test the V6 clocked pipeline",
+)
+
 if __name__ == "__main__":
     args = mode.parse_args()
     if args.arrays and not args.pechain:
         mode.error("--arrays requires --pechain")
     if args.v5 and not (args.pechain and args.arrays):
         mode.error("--v5 requires --pechain --arrays")
+    if args.v6 and not (args.pechain and args.arrays):
+        mode.error("--v6 requires --pechain --arrays")
+    if args.v5 and args.v6:
+        mode.error("--v5 and --v6 are mutually exclusive")
     passed_value = "1" if args.passed else "0"
     positive_value = "1" if args.positive else "0"
     zero_value = "1" if args.zero else "0"
@@ -77,6 +88,7 @@ if __name__ == "__main__":
     pechain_value = "1" if args.pechain else "0"
     arrays_value = "1" if args.arrays else "0"
     v5_value = "1" if args.v5 else "0"
+    v6_value = "1" if args.v6 else "0"
 else:
     passed_value = "1" 
     positive_value = "1"
@@ -85,6 +97,7 @@ else:
     pechain_value = "0"
     arrays_value = "0"
     v5_value = "0"
+    v6_value = "0"
 
 
 def signed_truncate(value, width):
@@ -95,6 +108,63 @@ def signed_truncate(value, width):
 @cocotb.test()
 async def test_product(dut):
     v5 = os.getenv("TEST_V5", "0") == "1"
+    v6 = os.getenv("TEST_V6", "0") == "1"
+    is_passed = os.getenv("TEST_PASSED_STATUS", "1") == "1"
+
+    if v6:
+        cocotb.start_soon(Clock(dut.clk, 2, unit="ns").start())
+        dut.a.value = 0
+        dut.b.value = 0
+        dut.acc_in.value = 0
+        dut.rst.value = 1
+        await RisingEdge(dut.clk)
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        assert dut.y_pe_chain_v6.value.to_signed() == 0, "V6 output was not cleared by reset"
+
+        await FallingEdge(dut.clk)
+        dut.rst.value = 0
+
+        transactions = [(2, 3), (-4, 5), (50, 3)]
+        expected_results = []
+        data_width = len(dut.a)
+        for a, b in transactions:
+            dut.a.value = a
+            dut.b.value = b
+            expected_results.append(sum(
+                signed_truncate(a + index, data_width)
+                * signed_truncate(b + index, data_width)
+                for index in range(4)
+            ))
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            await FallingEdge(dut.clk)
+
+        if not is_passed:
+            expected_results[0] += 1
+
+        dut.a.value = 0
+        dut.b.value = 0
+        for expected in expected_results:
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            actual = dut.y_pe_chain_v6.value.to_signed()
+            if actual != expected:
+                message = (
+                    f"[FAIL] pechain_v6 value different from expected "
+                    f"(Got {actual}, Expected {expected})"
+                )
+                test_logger.error(message)
+                assert actual == expected, message
+            print(f"[OK] pechain_v6 value equal to expected ({actual})")
+            await FallingEdge(dut.clk)
+
+        dut.rst.value = 1
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        assert dut.y_pe_chain_v6.value.to_signed() == 0, "V6 output was not cleared by reset"
+        return
+
     positive = os.getenv("TEST_POSITIVE_VALUES", "1") == "1"
     zero = os.getenv("TEST_ZERO_VALUES", "0") == "1"
     if zero:
@@ -109,8 +179,6 @@ async def test_product(dut):
     dut.b.value = b
     dut.acc_in.value = acc_in
     
-    is_passed = os.getenv("TEST_PASSED_STATUS", "1") == "1"
-
     data_width = len(dut.a)
     array_expected = [
         signed_truncate(a + index, data_width)
@@ -190,7 +258,7 @@ if __name__ == "__main__":
         timescale=("1ns", "1ps"),
     )
 
-    runner.test(
+    results_file = runner.test(
         hdl_toplevel="pe_testbench", test_module="test_pe",
         extra_env={
             "COCOTB_LOG_LEVEL": "WARNING" if args.warning else "ERROR",
@@ -202,5 +270,9 @@ if __name__ == "__main__":
             "TEST_PECHAIN": pechain_value,
             "TEST_ARRAYS": arrays_value,
             "TEST_V5": v5_value,
+            "TEST_V6": v6_value,
         },
     )
+    _, failed_tests = get_results(results_file)
+    if failed_tests:
+        raise SystemExit(1)
