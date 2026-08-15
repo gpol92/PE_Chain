@@ -59,6 +59,6 @@ python test_pe.py --pechain --arrays --v9
 
 Example output
 
-> [OK] V9 FSM completed with expected result (68)
+> [OK] V9 FSM completed with expected result (68) \
 > [OK] V9 FSM completed with expected result (-60)
 
