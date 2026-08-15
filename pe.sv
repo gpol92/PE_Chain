@@ -48,3 +48,33 @@ module pe_v6 #(
 			y <= acc_in + (a * b);
 	end
 endmodule
+
+
+// V7 PE: register the partial sum and its validity together. Invalid inputs
+// create bubbles in the pipeline and produce a deterministic zero data value.
+module pe_v7 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int ACC_WIDTH = 2 * DATA_WIDTH
+)(
+	input logic clk,
+	input logic rst,
+	input logic valid_in,
+	input logic signed [DATA_WIDTH-1:0] a,
+	input logic signed [DATA_WIDTH-1:0] b,
+	input logic signed [ACC_WIDTH-1:0] acc_in,
+	output logic signed [ACC_WIDTH-1:0] y,
+	output logic valid_out
+);
+	always_ff @(posedge clk) begin
+		if (rst) begin
+			y <= '0;
+			valid_out <= 1'b0;
+		end else begin
+			valid_out <= valid_in;
+			if (valid_in)
+				y <= acc_in + (a * b);
+			else
+				y <= '0;
+		end
+	end
+endmodule

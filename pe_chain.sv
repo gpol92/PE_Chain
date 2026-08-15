@@ -155,3 +155,82 @@ module pe_chain_v6 #(
 
 	assign y = chain_acc[NUM_PE];
 endmodule
+
+
+// V7 dot-product pipeline. valid_in marks an accepted input vector and
+// valid_out marks the corresponding result after it crosses every PE stage.
+module pe_chain_v7 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 2,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE)
+)(
+	input logic clk,
+	input logic rst,
+	input logic valid_in,
+	input logic signed [DATA_WIDTH-1:0] a [0:NUM_PE-1],
+	input logic signed [DATA_WIDTH-1:0] b [0:NUM_PE-1],
+	output logic signed [ACC_WIDTH-1:0] y,
+	output logic valid_out
+);
+	logic signed [ACC_WIDTH-1:0] chain_acc [0:NUM_PE];
+	logic chain_valid [0:NUM_PE];
+	logic signed [DATA_WIDTH-1:0] delayed_a [0:NUM_PE-1][0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] delayed_b [0:NUM_PE-1][0:NUM_PE-1];
+
+	assign chain_acc[0] = '0;
+	assign chain_valid[0] = valid_in;
+
+	genvar stage;
+	generate
+		for (stage = 0; stage < NUM_PE; stage++) begin : gen_delay_stages
+			always_ff @(posedge clk) begin
+				if (rst) begin
+					for (integer j = 0; j < NUM_PE; j++) begin
+						delayed_a[stage][j] <= '0;
+						delayed_b[stage][j] <= '0;
+					end
+				end else begin
+					for (integer j = 0; j < NUM_PE; j++) begin
+						if (stage == 0) begin
+							delayed_a[stage][j] <= a[j];
+							delayed_b[stage][j] <= b[j];
+						end else begin
+							delayed_a[stage][j] <= delayed_a[stage-1][j];
+							delayed_b[stage][j] <= delayed_b[stage-1][j];
+						end
+					end
+				end
+			end
+		end
+
+		for (stage = 0; stage < NUM_PE; stage++) begin : gen_pipeline_pe
+			wire signed [DATA_WIDTH-1:0] stage_a;
+			wire signed [DATA_WIDTH-1:0] stage_b;
+
+			if (stage == 0) begin : gen_first_stage_inputs
+				assign stage_a = a[stage];
+				assign stage_b = b[stage];
+			end else begin : gen_delayed_stage_inputs
+				assign stage_a = delayed_a[stage-1][stage];
+				assign stage_b = delayed_b[stage-1][stage];
+			end
+
+			pe_v7 #(
+				.DATA_WIDTH(DATA_WIDTH),
+				.ACC_WIDTH(ACC_WIDTH)
+			) pe_dut (
+				.clk(clk),
+				.rst(rst),
+				.valid_in(chain_valid[stage]),
+				.a(stage_a),
+				.b(stage_b),
+				.acc_in(chain_acc[stage]),
+				.y(chain_acc[stage+1]),
+				.valid_out(chain_valid[stage+1])
+			);
+		end
+	endgenerate
+
+	assign y = chain_acc[NUM_PE];
+	assign valid_out = chain_valid[NUM_PE];
+endmodule

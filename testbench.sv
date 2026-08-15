@@ -45,6 +45,19 @@ endmodule
 module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	input logic clk,
 	input logic rst,
+	input logic valid_in,
+	input logic ram_we,
+	input logic [1:0] ram_write_addr,
+	input logic [DATA_WIDTH-1:0] ram_write_data,
+	input logic [1:0] ram_read_addr,
+	input logic memory_load_we,
+	input logic memory_load_weights,
+	input logic [1:0] memory_load_addr,
+	input logic [(4*DATA_WIDTH)-1:0] memory_load_data,
+	input logic [1:0] data_addr,
+	input logic [1:0] weight_addr,
+	input logic v8_valid_in,
+	input logic start,
 	input logic signed [DATA_WIDTH-1:0] a,
 	input logic signed [DATA_WIDTH-1:0] b,
 	input logic signed [DATA_WIDTH-1:0] acc_in,
@@ -59,7 +72,14 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_2,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_3,
 	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v5,
-	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v6
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v6,
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v7,
+	output logic valid_out_pe_chain_v7,
+	output logic [DATA_WIDTH-1:0] ram_read_data,
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v8,
+	output logic valid_out_pe_chain_v8,
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] result_v9,
+	output logic done_v9
 );
 	logic signed [DATA_WIDTH-1:0] array_a [0:3];
 	logic signed [DATA_WIDTH-1:0] array_b [0:3];
@@ -96,6 +116,30 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	);
 	pe_chain_v6 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4)) pe_chain_v6_dut (
 		.clk(clk), .rst(rst), .a(array_a), .b(array_b), .y(y_pe_chain_v6)
+	);
+	pe_chain_v7 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4)) pe_chain_v7_dut (
+		.clk(clk), .rst(rst), .valid_in(valid_in), .a(array_a), .b(array_b),
+		.y(y_pe_chain_v7), .valid_out(valid_out_pe_chain_v7)
+	);
+
+	simple_ram #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(2)) ram_dut (
+		.clk(clk), .we(ram_we), .write_addr(ram_write_addr),
+		.write_data(ram_write_data), .read_addr(ram_read_addr),
+		.read_data(ram_read_data)
+	);
+	pe_chain_v8 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4), .ADDR_WIDTH(2)) pe_chain_v8_dut (
+		.clk(clk), .rst(rst), .load_we(memory_load_we),
+		.load_weights(memory_load_weights), .load_addr(memory_load_addr),
+		.load_data(memory_load_data), .data_addr(data_addr),
+		.weight_addr(weight_addr), .valid_in(v8_valid_in),
+		.y(y_pe_chain_v8), .valid_out(valid_out_pe_chain_v8)
+	);
+	pe_system_v9 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4), .ADDR_WIDTH(2)) pe_system_v9_dut (
+		.clk(clk), .rst(rst), .load_we(memory_load_we),
+		.load_weights(memory_load_weights), .load_addr(memory_load_addr),
+		.load_data(memory_load_data), .data_addr(data_addr),
+		.weight_addr(weight_addr), .start(start),
+		.result(result_v9), .done(done_v9)
 	);
 
 	assign y_pe_array_0 = array_y[0];
