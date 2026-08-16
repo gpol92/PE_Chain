@@ -79,7 +79,10 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v8,
 	output logic valid_out_pe_chain_v8,
 	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] result_v9,
-	output logic done_v9
+	output logic done_v9,
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] result_v10,
+	output logic busy_v10,
+	output logic done_v10
 );
 	logic signed [DATA_WIDTH-1:0] array_a [0:3];
 	logic signed [DATA_WIDTH-1:0] array_b [0:3];
@@ -140,6 +143,13 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 		.load_data(memory_load_data), .data_addr(data_addr),
 		.weight_addr(weight_addr), .start(start),
 		.result(result_v9), .done(done_v9)
+	);
+	pe_system_v10 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4), .ADDR_WIDTH(2)) pe_system_v10_dut (
+		.clk(clk), .rst(rst), .load_we(memory_load_we),
+		.load_weights(memory_load_weights), .load_addr(memory_load_addr),
+		.load_data(memory_load_data), .data_addr(data_addr),
+		.weight_addr(weight_addr), .start(start),
+		.busy(busy_v10), .done(done_v10), .result(result_v10)
 	);
 
 	assign y_pe_array_0 = array_y[0];

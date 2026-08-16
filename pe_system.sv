@@ -162,3 +162,100 @@ module pe_system_v9 #(
 		end
 	end
 endmodule
+
+
+// V10 exposes an explicit command interface around the RAM-backed datapath.
+// A command is accepted only in IDLE. busy is asserted for the whole RUN
+// phase, and done is asserted when result is captured. DONE waits for start to
+// be released, preventing a held command or a command presented while busy
+// from starting another operation.
+module pe_system_v10 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 4,
+	parameter int ADDR_WIDTH = 2,
+	parameter int VECTOR_WIDTH = DATA_WIDTH * NUM_PE,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE)
+)(
+	input logic clk,
+	input logic rst,
+	input logic load_we,
+	input logic load_weights,
+	input logic [ADDR_WIDTH-1:0] load_addr,
+	input logic [VECTOR_WIDTH-1:0] load_data,
+	input logic [ADDR_WIDTH-1:0] data_addr,
+	input logic [ADDR_WIDTH-1:0] weight_addr,
+	input logic start,
+	output logic busy,
+	output logic done,
+	output logic signed [ACC_WIDTH-1:0] result
+);
+	typedef enum logic [1:0] {
+		IDLE,
+		RUN,
+		DONE
+	} state_t;
+
+	state_t state;
+	logic pipeline_valid_in;
+	logic pipeline_valid_out;
+	logic signed [ACC_WIDTH-1:0] pipeline_y;
+
+	assign pipeline_valid_in = (state == IDLE) && start;
+	assign busy = (state == RUN);
+
+	pe_chain_v8 #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.NUM_PE(NUM_PE),
+		.ADDR_WIDTH(ADDR_WIDTH),
+		.VECTOR_WIDTH(VECTOR_WIDTH),
+		.ACC_WIDTH(ACC_WIDTH)
+	) datapath (
+		.clk(clk),
+		.rst(rst),
+		.load_we(load_we),
+		.load_weights(load_weights),
+		.load_addr(load_addr),
+		.load_data(load_data),
+		.data_addr(data_addr),
+		.weight_addr(weight_addr),
+		.valid_in(pipeline_valid_in),
+		.y(pipeline_y),
+		.valid_out(pipeline_valid_out)
+	);
+
+	always_ff @(posedge clk) begin
+		if (rst) begin
+			state <= IDLE;
+			result <= '0;
+			done <= 1'b0;
+		end else begin
+			case (state)
+				IDLE: begin
+					done <= 1'b0;
+					if (start)
+						state <= RUN;
+				end
+				RUN: begin
+					done <= 1'b0;
+					if (pipeline_valid_out) begin
+						result <= pipeline_y;
+						done <= 1'b1;
+						state <= DONE;
+					end
+				end
+				DONE: begin
+					done <= 1'b1;
+					if (!start) begin
+						done <= 1'b0;
+						state <= IDLE;
+					end
+				end
+				default: begin
+					state <= IDLE;
+					result <= '0;
+					done <= 1'b0;
+				end
+			endcase
+		end
+	end
+endmodule

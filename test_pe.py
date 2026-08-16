@@ -89,6 +89,12 @@ mode.add_argument(
     help="With --pechain --arrays, test the V9 FSM-controlled system",
 )
 
+mode.add_argument(
+    "--v10",
+    action="store_true",
+    help="With --pechain --arrays, test the V10 command interface",
+)
+
 if __name__ == "__main__":
     args = mode.parse_args()
     if args.arrays and not args.pechain:
@@ -103,8 +109,10 @@ if __name__ == "__main__":
         mode.error("--v8 requires --pechain --arrays")
     if args.v9 and not (args.pechain and args.arrays):
         mode.error("--v9 requires --pechain --arrays")
-    if sum((args.v5, args.v6, args.v7, args.v8, args.v9)) > 1:
-        mode.error("--v5 through --v9 are mutually exclusive")
+    if args.v10 and not (args.pechain and args.arrays):
+        mode.error("--v10 requires --pechain --arrays")
+    if sum((args.v5, args.v6, args.v7, args.v8, args.v9, args.v10)) > 1:
+        mode.error("--v5 through --v10 are mutually exclusive")
     passed_value = "1" if args.passed else "0"
     positive_value = "1" if args.positive else "0"
     zero_value = "1" if args.zero else "0"
@@ -116,6 +124,7 @@ if __name__ == "__main__":
     v7_value = "1" if args.v7 else "0"
     v8_value = "1" if args.v8 else "0"
     v9_value = "1" if args.v9 else "0"
+    v10_value = "1" if args.v10 else "0"
 else:
     passed_value = "1" 
     positive_value = "1"
@@ -128,6 +137,7 @@ else:
     v7_value = "0"
     v8_value = "0"
     v9_value = "0"
+    v10_value = "0"
 
 
 def signed_truncate(value, width):
@@ -157,9 +167,10 @@ async def test_product(dut):
     v7 = os.getenv("TEST_V7", "0") == "1"
     v8 = os.getenv("TEST_V8", "0") == "1"
     v9 = os.getenv("TEST_V9", "0") == "1"
+    v10 = os.getenv("TEST_V10", "0") == "1"
     is_passed = os.getenv("TEST_PASSED_STATUS", "1") == "1"
 
-    if v8 or v9:
+    if v8 or v9 or v10:
         cocotb.start_soon(Clock(dut.clk, 2, unit="ns").start())
         dut.a.value = 0
         dut.b.value = 0
@@ -198,9 +209,13 @@ async def test_product(dut):
             dut.ram_read_addr.value = 2
             await Timer(1, unit="ps")
             assert int(dut.ram_read_data.value) == 0xA5, "Standalone RAM read/write failed"
-        else:
+        elif v9:
             assert dut.done_v9.value == 0, "V9 done was not cleared by reset"
             assert dut.result_v9.value.to_signed() == 0, "V9 result was not cleared by reset"
+        else:
+            assert dut.busy_v10.value == 0, "V10 busy was not cleared by reset"
+            assert dut.done_v10.value == 0, "V10 done was not cleared by reset"
+            assert dut.result_v10.value.to_signed() == 0, "V10 result was not cleared by reset"
 
         data_vectors = ([2, 3, 4, 5], [-4, -3, -2, -1])
         weight_vectors = ([3, 4, 5, 6], [5, 6, 7, 8])
@@ -272,6 +287,108 @@ async def test_product(dut):
                     assert dut.y_pe_chain_v8.value.to_signed() == 0, "V8 bubble data was not zero"
 
                 await FallingEdge(dut.clk)
+            return
+
+        if v10:
+            async def run_v10(address, try_retrigger):
+                expected = dot_product(
+                    data_vectors[address], weight_vectors[address], data_width
+                )
+
+                await FallingEdge(dut.clk)
+                dut.data_addr.value = address
+                dut.weight_addr.value = address
+                dut.start.value = 1
+                await RisingEdge(dut.clk)
+                await ReadOnly()
+                assert dut.busy_v10.value == 1, (
+                    "V10 did not assert busy for an accepted command"
+                )
+                assert dut.done_v10.value == 0, (
+                    "V10 asserted done before the result was ready"
+                )
+
+                await FallingEdge(dut.clk)
+                dut.start.value = 0
+
+                if try_retrigger:
+                    # Let the accepted command advance, then request a
+                    # different command while RUN is active. Keep start high
+                    # through completion to check both RUN and DONE guards.
+                    await RisingEdge(dut.clk)
+                    await ReadOnly()
+                    assert dut.busy_v10.value == 1, (
+                        "V10 dropped busy before completion"
+                    )
+                    await FallingEdge(dut.clk)
+                    rejected_address = 1 - address
+                    dut.data_addr.value = rejected_address
+                    dut.weight_addr.value = rejected_address
+                    dut.start.value = 1
+
+                for _ in range(8):
+                    await RisingEdge(dut.clk)
+                    await ReadOnly()
+                    if dut.done_v10.value == 1:
+                        break
+                    assert dut.busy_v10.value == 1, (
+                        "V10 busy was low while the command was running"
+                    )
+                    await FallingEdge(dut.clk)
+                else:
+                    assert False, "V10 timed out waiting for done"
+
+                assert dut.busy_v10.value == 0, (
+                    "V10 kept busy high after completion"
+                )
+                assert dut.result_v10.value.to_signed() == expected, (
+                    "V10 result did not match the accepted command"
+                )
+
+                await FallingEdge(dut.clk)
+                if try_retrigger:
+                    await RisingEdge(dut.clk)
+                    await ReadOnly()
+                    assert dut.done_v10.value == 1, (
+                        "V10 did not hold done for a held retrigger attempt"
+                    )
+                    assert dut.busy_v10.value == 0, (
+                        "V10 retriggered while waiting for start to be released"
+                    )
+                    await FallingEdge(dut.clk)
+
+                dut.start.value = 0
+                await RisingEdge(dut.clk)
+                await ReadOnly()
+                assert dut.done_v10.value == 0, (
+                    "V10 did not clear done after start was released"
+                )
+                assert dut.busy_v10.value == 0, (
+                    "V10 was busy without an accepted command"
+                )
+
+                if try_retrigger:
+                    # Wait beyond the pipeline latency. A rejected command
+                    # must not produce a delayed busy/done event.
+                    for _ in range(5):
+                        await RisingEdge(dut.clk)
+                        await ReadOnly()
+                        assert dut.busy_v10.value == 0, (
+                            "V10 executed the rejected retrigger"
+                        )
+                        assert dut.done_v10.value == 0, (
+                            "V10 completed the rejected retrigger"
+                        )
+                        assert dut.result_v10.value.to_signed() == expected, (
+                            "V10 changed result after rejecting a retrigger"
+                        )
+                        await FallingEdge(dut.clk)
+
+                scenario = "with retrigger attempt" if try_retrigger else "without retrigger"
+                print(f"[OK] V10 command completed {scenario} ({expected})")
+
+            await run_v10(0, try_retrigger=False)
+            await run_v10(1, try_retrigger=True)
             return
 
         async def run_v9(address, expected, hold_start=False):
@@ -572,6 +689,7 @@ if __name__ == "__main__":
             "TEST_V7": v7_value,
             "TEST_V8": v8_value,
             "TEST_V9": v9_value,
+            "TEST_V10": v10_value,
         },
     )
     _, failed_tests = get_results(results_file)
