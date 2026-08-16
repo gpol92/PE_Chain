@@ -46,6 +46,15 @@ python test_pe.py --passed --zero --pechain
 python test_pe.py --passed --no-positive --pechain
 python test_pe.py --passed --positive --pechain
 ```
+
+### TEST PE_CHAIN with RAM addresses and access
+```bash
+python test_pe.py --pechain --arrays --v8
+```
+Example of output
+> [OK] pechain_v8 data_addr=0 weight_addr=0 value equal to expected (68) \
+> [OK] pechain_v8 data_addr=1 weight_addr=1 value equal to expected (-60)
+
 Example with pe_chain and calculation with array element by element
 ```bash
 python test_pe.py --pechain --arrays --v5 --positive
