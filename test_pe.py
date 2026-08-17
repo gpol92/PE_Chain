@@ -29,9 +29,11 @@ def run_simulation(config: _TestConfig) -> None:
             project_dir / "pe_chain.sv",
             project_dir / "simple_ram.sv",
             project_dir / "pe_system.sv",
+            project_dir / "pe_special.sv",
             project_dir / "testbench.sv",
         ],
         hdl_toplevel="pe_testbench",
+        parameters={"NUM_PE": config.num_pe, "NUM_DOT_UNITS": config.num_dots},
         always=True,
         timescale=("1ns", "1ps"),
     )
