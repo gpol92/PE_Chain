@@ -71,3 +71,16 @@ Example output
 > [OK] V9 FSM completed with expected result (68) \
 > [OK] V9 FSM completed with expected result (-60)
 
+## TEST PE CHAIN COMMAND INTERFACE
+
+```bash
+python test_pe.py --pechain --arrays --v10
+```
+
+Example output
+
+> [OK] V10 command completed without retrigger (68) \
+> [OK] V10 command completed with retrigger attempt (-60)
+
+
+
