@@ -27,6 +27,7 @@ async def run_product_test(dut, config: TestConfig) -> None:
         "v8": run_memory_system,
         "v9": run_memory_system,
         "v10": run_memory_system,
+        "v11": run_memory_system,
     }.get(config.pipeline_version, run_combinational)
     await scenario(dut, config)
 
@@ -150,8 +151,11 @@ async def run_memory_system(dut, config: TestConfig) -> None:
         await _run_v8_transactions(dut, config, data_width)
     elif version == "v9":
         await _run_v9_transactions(dut, config, data_width)
-    else:
+    elif version == "v10":
         await _run_v10_transactions(dut, data_width)
+    else:
+        await _verify_v11_memories(dut, data_width)
+        await _run_v11_transactions(dut, config, data_width)
 
 
 async def _initialize_memory_system(dut) -> None:
@@ -171,6 +175,7 @@ async def _initialize_memory_system(dut) -> None:
     dut.data_addr.value = 0
     dut.weight_addr.value = 0
     dut.v8_valid_in.value = 0
+    dut.v11_valid_in.value = 0
     dut.start.value = 0
     dut.rst.value = 1
     await RisingEdge(dut.clk)
@@ -185,10 +190,13 @@ def _assert_memory_reset(dut, version: str) -> None:
     elif version == "v9":
         assert dut.done_v9.value == 0, "V9 done was not cleared by reset"
         assert dut.result_v9.value.to_signed() == 0, "V9 result was not cleared by reset"
-    else:
+    elif version == "v10":
         assert dut.busy_v10.value == 0, "V10 busy was not cleared by reset"
         assert dut.done_v10.value == 0, "V10 done was not cleared by reset"
         assert dut.result_v10.value.to_signed() == 0, "V10 result was not cleared by reset"
+    else:
+        assert dut.valid_out_pe_chain_v11.value == 0, "V11 valid_out was not reset"
+        assert dut.y_pe_chain_v11.value.to_signed() == 0, "V11 output was not reset"
 
 
 async def _test_standalone_ram(dut) -> None:
@@ -254,6 +262,51 @@ async def _run_v8_transactions(dut, config: TestConfig, data_width: int) -> None
             )
         else:
             assert dut.y_pe_chain_v8.value.to_signed() == 0, "V8 bubble data was not zero"
+        await FallingEdge(dut.clk)
+
+
+async def _verify_v11_memories(dut, data_width: int) -> None:
+    for address, (data, weights) in enumerate(zip(DATA_VECTORS, WEIGHT_VECTORS)):
+        dut.data_addr.value = address
+        dut.weight_addr.value = address
+        await Timer(1, unit="ps")
+        assert int(dut.a_read_data_v11.value) == pack_vector(data, data_width), (
+            f"V11 data memory mismatch at address {address}"
+        )
+        assert int(dut.b_read_data_v11.value) == pack_vector(weights, data_width), (
+            f"V11 weight memory mismatch at address {address}"
+        )
+
+
+async def _run_v11_transactions(dut, config: TestConfig, data_width: int) -> None:
+    transactions = [(0, True), (1, True)]
+    for cycle in range(len(transactions) + PIPELINE_LATENCY - 1):
+        address, valid = transactions[cycle] if cycle < len(transactions) else (0, False)
+        dut.data_addr.value = address
+        dut.weight_addr.value = address
+        dut.v11_valid_in.value = valid
+
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        completed_cycle = cycle - (PIPELINE_LATENCY - 1)
+        expected_valid = completed_cycle >= 0
+        assert bool(dut.valid_out_pe_chain_v11.value) == expected_valid, (
+            f"V11 valid mismatch at cycle {cycle}"
+        )
+        if expected_valid:
+            completed_address = transactions[completed_cycle][0]
+            expected = dot_product(
+                DATA_VECTORS[completed_address],
+                WEIGHT_VECTORS[completed_address],
+                data_width,
+            )
+            if not config.passed and completed_cycle == 0:
+                expected += 1
+            assert_signal_equals("pechain_v11", dut.y_pe_chain_v11, expected)
+        else:
+            assert dut.y_pe_chain_v11.value.to_signed() == 0, (
+                "V11 bubble data was not zero"
+            )
         await FallingEdge(dut.clk)
 
 

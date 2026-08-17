@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass
 
 
-PIPELINED_VERSIONS = tuple(f"v{version}" for version in range(5, 11))
+PIPELINED_VERSIONS = tuple(f"v{version}" for version in range(5, 12))
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "v8": "test RAM and the V8 memory-backed chain",
         "v9": "test the V9 FSM-controlled system",
         "v10": "test the V10 command interface",
+        "v11": "test the V11 data and weight memories",
     }.items():
         parser.add_argument(
             f"--{version}",
@@ -130,7 +131,7 @@ def parse_config() -> TestConfig:
     if selected and not (args.pechain and args.arrays):
         parser.error(f"--{selected[0]} requires --pechain --arrays")
     if len(selected) > 1:
-        parser.error("--v5 through --v10 are mutually exclusive")
+        parser.error("--v5 through --v11 are mutually exclusive")
 
     return TestConfig(
         passed=args.passed,

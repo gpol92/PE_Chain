@@ -57,6 +57,7 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	input logic [1:0] data_addr,
 	input logic [1:0] weight_addr,
 	input logic v8_valid_in,
+	input logic v11_valid_in,
 	input logic start,
 	input logic signed [DATA_WIDTH-1:0] a,
 	input logic signed [DATA_WIDTH-1:0] b,
@@ -82,7 +83,11 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 	output logic done_v9,
 	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] result_v10,
 	output logic busy_v10,
-	output logic done_v10
+	output logic done_v10,
+	output logic [(4*DATA_WIDTH)-1:0] a_read_data_v11,
+	output logic [(4*DATA_WIDTH)-1:0] b_read_data_v11,
+	output logic signed [(2*DATA_WIDTH)+$clog2(4)-1:0] y_pe_chain_v11,
+	output logic valid_out_pe_chain_v11
 );
 	logic signed [DATA_WIDTH-1:0] array_a [0:3];
 	logic signed [DATA_WIDTH-1:0] array_b [0:3];
@@ -150,6 +155,16 @@ module pe_testbench #(parameter int DATA_WIDTH = 8) (
 		.load_data(memory_load_data), .data_addr(data_addr),
 		.weight_addr(weight_addr), .start(start),
 		.busy(busy_v10), .done(done_v10), .result(result_v10)
+	);
+	pe_chain_v11 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(4), .ADDR_WIDTH(2)) pe_chain_v11_dut (
+		.clk(clk), .rst(rst),
+		.a_write_enable(memory_load_we && !memory_load_weights),
+		.b_write_enable(memory_load_we && memory_load_weights),
+		.write_addr(memory_load_addr), .write_data(memory_load_data),
+		.a_read_addr(data_addr), .b_read_addr(weight_addr),
+		.valid_in(v11_valid_in), .a_read_data(a_read_data_v11),
+		.b_read_data(b_read_data_v11), .y(y_pe_chain_v11),
+		.valid_out(valid_out_pe_chain_v11)
 	);
 
 	assign y_pe_array_0 = array_y[0];

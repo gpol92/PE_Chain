@@ -72,6 +72,116 @@ module pe_chain_v8 #(
 endmodule
 
 
+// V11 separates operand storage from the compute pipeline. The two banks have
+// independent write enables so software can load data and weights explicitly.
+// Their read ports are exposed both for verification and for the PE chain.
+module operand_memory_v11 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 4,
+	parameter int ADDR_WIDTH = 2,
+	parameter int VECTOR_WIDTH = DATA_WIDTH * NUM_PE
+)(
+	input logic clk,
+	input logic a_write_enable,
+	input logic b_write_enable,
+	input logic [ADDR_WIDTH-1:0] write_addr,
+	input logic [VECTOR_WIDTH-1:0] write_data,
+	input logic [ADDR_WIDTH-1:0] a_read_addr,
+	input logic [ADDR_WIDTH-1:0] b_read_addr,
+	output logic [VECTOR_WIDTH-1:0] a_read_data,
+	output logic [VECTOR_WIDTH-1:0] b_read_data
+);
+	simple_ram #(
+		.DATA_WIDTH(VECTOR_WIDTH),
+		.ADDR_WIDTH(ADDR_WIDTH)
+	) a_memory (
+		.clk(clk),
+		.we(a_write_enable),
+		.write_addr(write_addr),
+		.write_data(write_data),
+		.read_addr(a_read_addr),
+		.read_data(a_read_data)
+	);
+
+	simple_ram #(
+		.DATA_WIDTH(VECTOR_WIDTH),
+		.ADDR_WIDTH(ADDR_WIDTH)
+	) b_memory (
+		.clk(clk),
+		.we(b_write_enable),
+		.write_addr(write_addr),
+		.write_data(write_data),
+		.read_addr(b_read_addr),
+		.read_data(b_read_data)
+	);
+endmodule
+
+
+module pe_chain_v11 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 4,
+	parameter int ADDR_WIDTH = 2,
+	parameter int VECTOR_WIDTH = DATA_WIDTH * NUM_PE,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE)
+)(
+	input logic clk,
+	input logic rst,
+	input logic a_write_enable,
+	input logic b_write_enable,
+	input logic [ADDR_WIDTH-1:0] write_addr,
+	input logic [VECTOR_WIDTH-1:0] write_data,
+	input logic [ADDR_WIDTH-1:0] a_read_addr,
+	input logic [ADDR_WIDTH-1:0] b_read_addr,
+	input logic valid_in,
+	output logic [VECTOR_WIDTH-1:0] a_read_data,
+	output logic [VECTOR_WIDTH-1:0] b_read_data,
+	output logic signed [ACC_WIDTH-1:0] y,
+	output logic valid_out
+);
+	logic signed [DATA_WIDTH-1:0] chain_a [0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] chain_b [0:NUM_PE-1];
+
+	operand_memory_v11 #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.NUM_PE(NUM_PE),
+		.ADDR_WIDTH(ADDR_WIDTH),
+		.VECTOR_WIDTH(VECTOR_WIDTH)
+	) operand_memory (
+		.clk(clk),
+		.a_write_enable(a_write_enable),
+		.b_write_enable(b_write_enable),
+		.write_addr(write_addr),
+		.write_data(write_data),
+		.a_read_addr(a_read_addr),
+		.b_read_addr(b_read_addr),
+		.a_read_data(a_read_data),
+		.b_read_data(b_read_data)
+	);
+
+	genvar i;
+	generate
+		for (i = 0; i < NUM_PE; i++) begin : gen_operand_elements
+			assign chain_a[i] = a_read_data[(i * DATA_WIDTH) +: DATA_WIDTH];
+			assign chain_b[i] = b_read_data[(i * DATA_WIDTH) +: DATA_WIDTH];
+		end
+	endgenerate
+
+	pe_chain_v7 #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.NUM_PE(NUM_PE),
+		.ACC_WIDTH(ACC_WIDTH)
+	) pipeline (
+		.clk(clk),
+		.rst(rst),
+		.valid_in(valid_in),
+		.a(chain_a),
+		.b(chain_b),
+		.y(y),
+		.valid_out(valid_out)
+	);
+endmodule
+
+
 // V9 controls the RAM-backed datapath with a simple start/done handshake.
 // A request is accepted in IDLE, RUN waits for the pipeline result, and DONE
 // remains asserted while start is high before returning to IDLE.
