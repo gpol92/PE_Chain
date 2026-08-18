@@ -23,6 +23,19 @@ async def test_product(dut):
 def run_simulation(config: _TestConfig) -> None:
     project_dir = Path(__file__).resolve().parent
     runner = get_runner("icarus")
+    parameters = {
+        "NUM_PE": config.num_pe,
+        "NUM_EL": config.num_el,
+        "NUM_DOT_UNITS": config.num_dots,
+    }
+    if config.overflow:
+        width_parameter = {
+            "v7": "V7_ACC_WIDTH",
+            "v13": "SPECIAL_ACC_WIDTH",
+            "v14": "V14_ACC_WIDTH",
+        }[config.version]
+        parameters[width_parameter] = 2 * 8
+
     runner.build(
         sources=[
             project_dir / "pe.sv",
@@ -33,7 +46,7 @@ def run_simulation(config: _TestConfig) -> None:
             project_dir / "testbench.sv",
         ],
         hdl_toplevel="pe_testbench",
-        parameters={"NUM_PE": config.num_pe, "NUM_DOT_UNITS": config.num_dots},
+        parameters=parameters,
         always=True,
         timescale=("1ns", "1ps"),
     )

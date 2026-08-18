@@ -3,9 +3,6 @@
 import logging
 
 
-test_logger = logging.getLogger("test_pe")
-
-
 def signed_truncate(value: int, width: int) -> int:
     raw_value = value & ((1 << width) - 1)
     sign_bit = 1 << (width - 1)
@@ -27,21 +24,10 @@ def dot_product(values, weights, width: int) -> int:
     )
 
 
-def chain_dot_product(a: int, b: int, width: int, length: int = 4) -> int:
-    return sum(
-        signed_truncate(a + index, width)
-        * signed_truncate(b + index, width)
-        for index in range(length)
-    )
-
-
 def assert_signal_equals(name: str, signal, expected: int) -> None:
     actual = signal.value.to_signed()
     if actual != expected:
-        message = (
-            f"[FAIL] {name} value different from expected "
-            f"(Got {actual}, Expected {expected})"
-        )
-        test_logger.error(message)
-        assert actual == expected, message
+        message = f"[FAIL] {name}: got {actual}, expected {expected}"
+        logging.getLogger("test_pe").error(message)
+        raise AssertionError(message)
     print(f"[OK] {name} value equal to expected ({actual})")

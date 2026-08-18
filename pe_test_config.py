@@ -7,8 +7,16 @@ import os
 from dataclasses import dataclass
 
 
-PE_VERSIONS = (*tuple(f"v{version}" for version in range(13)), "vspecial")
-ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 13)), "vspecial")
+PE_VERSIONS = (*tuple(f"v{version}" for version in range(16)), "vspecial")
+ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 16)), "vspecial")
+FLAG_FIELDS = (
+    "passed", "positive", "zero", "pechain", "arrays", "calculus", "overlap",
+    "overflow",
+)
+ENV_NAMES = {
+    "passed": "TEST_PASSED_STATUS", "positive": "TEST_POSITIVE_VALUES",
+    "zero": "TEST_ZERO_VALUES",
+}
 
 
 @dataclass(frozen=True)
@@ -21,22 +29,23 @@ class TestConfig:
     arrays: bool = False
     calculus: bool = False
     overlap: bool = False
+    overflow: bool = False
     warning: bool = False
     num_pe: int = 4
+    num_el: int = 4
     num_dots: int = 3
 
     @classmethod
     def from_environment(cls) -> "TestConfig":
+        defaults = cls()
         return cls(
-            passed=_env_flag("TEST_PASSED_STATUS", True),
-            positive=_env_flag("TEST_POSITIVE_VALUES", True),
-            zero=_env_flag("TEST_ZERO_VALUES", False),
+            **{
+                name: _env_flag(_env_name(name), getattr(defaults, name))
+                for name in FLAG_FIELDS
+            },
             version=os.getenv("TEST_VERSION", "all"),
-            pechain=_env_flag("TEST_PECHAIN", False),
-            arrays=_env_flag("TEST_ARRAYS", False),
-            calculus=_env_flag("TEST_CALCULUS", False),
-            overlap=_env_flag("TEST_OVERLAP", False),
             num_pe=int(os.getenv("TEST_NUM_PE", "4")),
+            num_el=int(os.getenv("TEST_NUM_EL", "4")),
             num_dots=int(os.getenv("TEST_NUM_DOTS", "3")),
         )
 
@@ -44,18 +53,20 @@ class TestConfig:
         environment = {
             "COCOTB_LOG_LEVEL": "WARNING" if self.warning else "ERROR",
             "GPI_LOG_LEVEL": "ERROR",
-            "TEST_PASSED_STATUS": _flag_value(self.passed),
-            "TEST_POSITIVE_VALUES": _flag_value(self.positive),
-            "TEST_ZERO_VALUES": _flag_value(self.zero),
             "TEST_VERSION": self.version,
-            "TEST_PECHAIN": _flag_value(self.pechain),
-            "TEST_ARRAYS": _flag_value(self.arrays),
-            "TEST_CALCULUS": _flag_value(self.calculus),
-            "TEST_OVERLAP": _flag_value(self.overlap),
             "TEST_NUM_PE": str(self.num_pe),
+            "TEST_NUM_EL": str(self.num_el),
             "TEST_NUM_DOTS": str(self.num_dots),
         }
+        environment.update(
+            (_env_name(name), _flag_value(getattr(self, name)))
+            for name in FLAG_FIELDS
+        )
         return environment
+
+
+def _env_name(field_name: str) -> str:
+    return ENV_NAMES.get(field_name, f"TEST_{field_name.upper()}")
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -121,13 +132,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--calculus",
+        "--debug",
         action="store_true",
-        help="Show each a[i] * b[i] calculation pass",
+        help="Show each PE calculation step (--debug is an alias)",
     )
     parser.add_argument(
         "--overlap",
         action="store_true",
-        help="Attempt a second V12 or VSpecial calculation while busy",
+        help="Attempt a second V12, V13, or VSpecial calculation while busy",
+    )
+    parser.add_argument(
+        "--overflow",
+        action="store_true",
+        help="Run the V7, V13, or V14 overflow testcase",
     )
     parser.add_argument(
         "--numPE",
@@ -136,7 +153,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         metavar="COUNT",
-        help="Set the number of processing elements for V5-V12 and VSpecial (default: 4)",
+        help="Set the number of processing elements for V5-V14 and VSpecial (default: 4)",
+    )
+    parser.add_argument(
+        "--num-el",
+        dest="num_el",
+        type=int,
+        default=4,
+        metavar="COUNT",
+        help="Set both the vector length and number of PEs for V15 (default: 4)",
     )
     parser.add_argument(
         "--num-dots",
@@ -144,7 +169,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         metavar="COUNT",
-        help="Set the number of chained dot-product units for VSpecial (default: 3)",
+        help="Set the number of chained dot-product units for V13 or VSpecial (default: 3)",
     )
     return parser
 
@@ -159,27 +184,25 @@ def parse_config() -> TestConfig:
         args.pechain and args.arrays
     ):
         parser.error(f"--{args.version} requires --pechain --arrays")
-    if args.overlap and args.version not in ("v12", "vspecial"):
-        parser.error("--overlap requires --v12 or --vspecial")
+    if args.overlap and args.version not in ("v12", "v13", "vspecial"):
+        parser.error("--overlap requires --v12, --v13, or --vspecial")
+    if args.overflow and args.version not in ("v7", "v13", "v14"):
+        parser.error("--overflow requires --v7, --v13, or --v14")
+    if args.overflow and args.num_pe < 3:
+        parser.error("--overflow requires at least 3 processing elements")
     if args.num_pe < 1:
         parser.error("--numPE must be at least 1")
-    if args.num_pe != 4 and args.version not in ARRAY_PIPELINE_VERSIONS:
-        parser.error("--numPE is configurable only for V5-V12 and VSpecial")
+    if args.num_pe != 4 and args.version not in (
+        *tuple(f"v{version}" for version in range(5, 15)), "vspecial"
+    ):
+        parser.error("--numPE is configurable only for V5-V14 and VSpecial")
+    if args.num_el < 1:
+        parser.error("--num-el must be at least 1")
+    if args.num_el != 4 and args.version != "v15":
+        parser.error("--num-el is configurable only for V15")
     if args.num_dots < 1:
         parser.error("--num-dots must be at least 1")
-    if args.num_dots != 3 and args.version != "vspecial":
-        parser.error("--num-dots is configurable only for VSpecial")
+    if args.num_dots != 3 and args.version not in ("v13", "vspecial"):
+        parser.error("--num-dots is configurable only for V13 or VSpecial")
 
-    return TestConfig(
-        passed=args.passed,
-        positive=args.positive,
-        zero=args.zero,
-        version=args.version,
-        pechain=args.pechain,
-        arrays=args.arrays,
-        calculus=args.calculus,
-        overlap=args.overlap,
-        warning=args.warning,
-        num_pe=args.num_pe,
-        num_dots=args.num_dots,
-    )
+    return TestConfig(**vars(args))

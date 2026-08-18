@@ -12,6 +12,24 @@ from pe_test_helpers import (
     signed_truncate,
 )
 
+CLOCKED_INPUTS = (
+    "a", "b", "acc_in", "chain_data_vector", "chain_weight_vector", "valid_in"
+)
+MEMORY_INPUTS = CLOCKED_INPUTS + (
+    "ram_we", "ram_write_addr", "ram_write_data", "ram_read_addr",
+    "memory_load_we", "memory_load_weights", "memory_load_addr", "memory_load_data",
+    "data_addr", "weight_addr", "v8_valid_in", "v11_valid_in", "special_valid_in",
+    "special_data_vectors", "special_weight_vectors", "special_biases",
+    "special_result_addr", "start",
+)
+MEMORY_RESET_OUTPUTS = {
+    "v8": ("valid_out_pe_chain_v8", "y_pe_chain_v8"),
+    "v9": ("done_v9", "result_v9"),
+    "v10": ("busy_v10", "done_v10", "result_v10"),
+    "v11": ("valid_out_pe_chain_v11", "y_pe_chain_v11"),
+    "v12": ("busy_v12", "done_v12", "error_v12", "result_v12"),
+}
+
 
 def _vector(start: int, length: int) -> tuple[int, ...]:
     return tuple(start + index for index in range(length))
@@ -29,6 +47,12 @@ def _drive_chain_vectors(dut, data, weights, data_width: int) -> None:
     dut.chain_weight_vector.value = pack_vector(weights, data_width)
 
 
+async def _tick(dut) -> None:
+    """Advance to the next rising edge and sample settled signal values."""
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+
+
 async def run_product_test(dut, config: TestConfig) -> None:
     """Dispatch to the scenario selected through the runner environment."""
     scenario = {
@@ -39,27 +63,25 @@ async def run_product_test(dut, config: TestConfig) -> None:
         "v10": run_memory_system,
         "v11": run_memory_system,
         "v12": run_v12_system,
+        "v13": run_v13_system,
+        "v14": run_v14_parallel,
+        "v15": run_v15_element_array,
         "vspecial": run_vspecial,
     }.get(config.version, run_combinational)
     await scenario(dut, config)
 
 
-async def _start_and_reset_clocked_dut(dut) -> None:
+async def _reset_dut(dut, inputs=CLOCKED_INPUTS) -> None:
     cocotb.start_soon(Clock(dut.clk, 2, unit="ns").start())
-    dut.a.value = 0
-    dut.b.value = 0
-    dut.acc_in.value = 0
-    dut.chain_data_vector.value = 0
-    dut.chain_weight_vector.value = 0
-    dut.valid_in.value = 0
+    for name in inputs:
+        getattr(dut, name).value = 0
     dut.rst.value = 1
     await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
 
 
 async def run_v6_pipeline(dut, config: TestConfig) -> None:
-    await _start_and_reset_clocked_dut(dut)
+    await _reset_dut(dut)
     assert dut.y_pe_chain_v6.value.to_signed() == 0, "V6 output was not cleared by reset"
 
     await FallingEdge(dut.clk)
@@ -85,8 +107,7 @@ async def run_v6_pipeline(dut, config: TestConfig) -> None:
             else ((0,) * config.num_pe, (0,) * config.num_pe)
         )
         _drive_chain_vectors(dut, data, weights, data_width)
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         completed_cycle = cycle - (config.num_pe - 1)
         if 0 <= completed_cycle < len(expected_results):
             assert_signal_equals(
@@ -95,26 +116,46 @@ async def run_v6_pipeline(dut, config: TestConfig) -> None:
         await FallingEdge(dut.clk)
 
     dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.y_pe_chain_v6.value.to_signed() == 0, "V6 output was not cleared by reset"
 
 
 async def run_v7_valid_pipeline(dut, config: TestConfig) -> None:
-    await _start_and_reset_clocked_dut(dut)
+    await _reset_dut(dut)
     assert dut.valid_out_pe_chain_v7.value == 0, "V7 valid_out was not cleared by reset"
+    assert dut.error_out_pe_chain_v7.value == 0, "V7 error_out was not cleared by reset"
+    assert int(dut.overflow_out_pe_chain_v7.value) == 0, (
+        "V7 overflow map was not cleared by reset"
+    )
     assert dut.y_pe_chain_v7.value.to_signed() == 0, "V7 output was not cleared by reset"
+
+
+    if config.overflow:
+        await _run_v7_overflow_vector(dut, config)
+        return
 
     await FallingEdge(dut.clk)
     dut.rst.value = 0
-    transactions = [
+    valid_transactions = [
         (_vector(2, config.num_pe), _vector(3, config.num_pe), True),
-        (_vector(9, config.num_pe), _vector(-9, config.num_pe), False),
+        (_vector(9, config.num_pe), _vector(-9, config.num_pe), True),
         (_vector(-4, config.num_pe), _vector(5, config.num_pe), True),
         (_vector(9, config.num_pe), _vector(3, config.num_pe), True),
+    ]
+    valid_transactions.extend(
+        (
+            _vector(20 + vector_id, config.num_pe),
+            _vector(-30 - vector_id, config.num_pe),
+            True,
+        )
+        for vector_id in range(4, config.num_pe)
+    )
+    transactions = [
+        *valid_transactions,
         (_vector(7, config.num_pe), _vector(9, config.num_pe), False),
     ]
     driven = []
+    saw_full_pipeline = False
     data_width = len(dut.a)
 
     for cycle in range(len(transactions) + config.num_pe - 1):
@@ -128,8 +169,16 @@ async def run_v7_valid_pipeline(dut, config: TestConfig) -> None:
         dut.valid_in.value = valid
         driven.append((data, weights, valid))
 
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        # Immediately before this edge, PE i must hold element i of the
+        # vector accepted i iterations earlier.  The origin indices are
+        # cycle-i, so no two active PEs may be working on the same vector.
+        await Timer(1, unit="ps")
+        active_vector_ids = _assert_v7_pe_vector_mapping(
+            dut, driven, cycle, config.num_pe, data_width
+        )
+        saw_full_pipeline |= len(active_vector_ids) == config.num_pe
+
+        await _tick(dut)
 
         completed_cycle = cycle - (config.num_pe - 1)
         completed = (
@@ -139,6 +188,13 @@ async def run_v7_valid_pipeline(dut, config: TestConfig) -> None:
         )
         expected_data, expected_weights, expected_valid = completed
         actual_valid = bool(dut.valid_out_pe_chain_v7.value)
+        actual_error = bool(dut.error_out_pe_chain_v7.value)
+        actual_overflow_map = int(dut.overflow_out_pe_chain_v7.value)
+        assert not actual_error, f"V7 raised an unexpected overflow at cycle {cycle}"
+        assert actual_overflow_map == 0, (
+            f"V7 raised unexpected per-PE overflow bits at cycle {cycle}: "
+            f"0b{actual_overflow_map:0{config.num_pe}b}"
+        )
         assert actual_valid == expected_valid, (
             f"V7 valid mismatch at cycle {cycle}: got {actual_valid}, expected {expected_valid}"
         )
@@ -164,11 +220,290 @@ async def run_v7_valid_pipeline(dut, config: TestConfig) -> None:
             )
         await FallingEdge(dut.clk)
 
+    assert saw_full_pipeline, "V7 proof never observed every PE active simultaneously"
+
     dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.valid_out_pe_chain_v7.value == 0, "V7 valid_out was not cleared by reset"
+    assert dut.error_out_pe_chain_v7.value == 0, "V7 error_out was not cleared by reset"
+    assert int(dut.overflow_out_pe_chain_v7.value) == 0, (
+        "V7 overflow map was not cleared by reset"
+    )
     assert dut.y_pe_chain_v7.value.to_signed() == 0, "V7 output was not cleared by reset"
+
+
+async def run_v14_parallel(dut, config: TestConfig) -> None:
+    """Prove that all PE lanes multiply one vector in the same cycle."""
+    await _reset_dut(dut)
+    assert dut.valid_out_pe_chain_v14.value == 0, "V14 valid_out was not reset"
+    assert dut.error_out_pe_chain_v14.value == 0, "V14 error_out was not reset"
+    assert int(dut.overflow_out_pe_chain_v14.value) == 0, (
+        "V14 overflow map was not reset"
+    )
+    assert dut.y_pe_chain_v14.value.to_signed() == 0, "V14 output was not reset"
+
+    if config.overflow:
+        await _run_v14_overflow_vector(dut, config)
+        return
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    data_width = len(dut.a)
+    product_width = 2 * data_width
+    transactions = [
+        (_vector(2, config.num_pe), _vector(3, config.num_pe), True),
+        (_vector(-4, config.num_pe), _vector(5, config.num_pe), True),
+        (_vector(9, config.num_pe), _vector(-3, config.num_pe), True),
+        ((0,) * config.num_pe, (0,) * config.num_pe, False),
+    ]
+
+    for cycle, (data, weights, valid) in enumerate(transactions):
+        _drive_chain_vectors(dut, data, weights, data_width)
+        dut.valid_in.value = valid
+        await Timer(1, unit="ps")
+
+        # Every slice must already contain a product from this same vector.
+        product_trace = int(dut.v14_pe_product_trace.value)
+        actual_products = []
+        for pe_index, (value, weight) in enumerate(zip(data, weights)):
+            actual_product = signed_truncate(
+                product_trace >> (pe_index * product_width), product_width
+            )
+            actual_products.append(actual_product)
+            expected_product = (
+                signed_truncate(value, data_width)
+                * signed_truncate(weight, data_width)
+            )
+            assert actual_product == expected_product, (
+                f"V14 PE{pe_index} product mismatch in cycle {cycle}: "
+                f"got {actual_product}, expected a[{pe_index}] * b[{pe_index}] "
+                f"= {expected_product}"
+            )
+
+        await _tick(dut)
+        assert bool(dut.valid_out_pe_chain_v14.value) == valid, (
+            f"V14 valid mismatch in cycle {cycle}"
+        )
+        assert dut.error_out_pe_chain_v14.value == 0, (
+            f"V14 raised an unexpected overflow in cycle {cycle}"
+        )
+        assert int(dut.overflow_out_pe_chain_v14.value) == 0, (
+            f"V14 raised unexpected per-PE overflow bits in cycle {cycle}"
+        )
+        expected_sum = dot_product(data, weights, data_width) if valid else 0
+        assert_signal_equals("pechain_v14", dut.y_pe_chain_v14, expected_sum)
+        if config.calculus and valid:
+            _show_v14_calculation(
+                cycle,
+                data,
+                weights,
+                actual_products,
+                data_width,
+                len(dut.y_pe_chain_v14),
+                dut.y_pe_chain_v14.value.to_signed(),
+                int(dut.overflow_out_pe_chain_v14.value),
+            )
+        await FallingEdge(dut.clk)
+
+    print(
+        f"[OK] V14 executed all {config.num_pe} indexed products concurrently"
+    )
+
+
+async def _run_v14_overflow_vector(dut, config: TestConfig) -> None:
+    data_width = len(dut.a)
+    max_operand = (1 << (data_width - 1)) - 1
+    overflow_vector = (max_operand,) * config.num_pe
+    expected_overflow_map = _expected_v7_overflow_map(
+        overflow_vector,
+        overflow_vector,
+        data_width,
+        len(dut.y_pe_chain_v14),
+    )
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    dut.valid_in.value = 1
+    _drive_chain_vectors(dut, overflow_vector, overflow_vector, data_width)
+    await _tick(dut)
+
+    assert dut.error_out_pe_chain_v14.value == 1, "V14 did not flag vector overflow"
+    assert dut.valid_out_pe_chain_v14.value == 0, "V14 overflow remained valid"
+    assert dut.y_pe_chain_v14.value.to_signed() == 0, "V14 overflow data was not zero"
+    actual_overflow_map = int(dut.overflow_out_pe_chain_v14.value)
+    assert actual_overflow_map == expected_overflow_map, (
+        f"V14 per-PE overflow map was 0b{actual_overflow_map:0{config.num_pe}b}, "
+        f"expected 0b{expected_overflow_map:0{config.num_pe}b}"
+    )
+
+    if config.calculus:
+        product_width = 2 * data_width
+        product_trace = int(dut.v14_pe_product_trace.value)
+        actual_products = [
+            signed_truncate(
+                product_trace >> (pe_index * product_width), product_width
+            )
+            for pe_index in range(config.num_pe)
+        ]
+        _show_v14_calculation(
+            0,
+            overflow_vector,
+            overflow_vector,
+            actual_products,
+            data_width,
+            len(dut.y_pe_chain_v14),
+            dut.y_pe_chain_v14.value.to_signed(),
+            actual_overflow_map,
+        )
+
+    for pe_index in range(config.num_pe):
+        status = (
+            "overflowing" if (actual_overflow_map >> pe_index) & 1
+            else "not overflowing"
+        )
+        print(f"[OVERFLOW] V14 PE{pe_index}: {status}")
+    print(
+        f"[OK] pechain_v14 overflow map "
+        f"0b{actual_overflow_map:0{config.num_pe}b} for {overflow_vector}"
+    )
+
+
+async def run_v15_element_array(dut, config: TestConfig) -> None:
+    """Check one independently visible product for every vector element/PE."""
+    data_width = len(dut.a)
+    product_width = 2 * data_width
+    data = _vector(2, config.num_el)
+    weights = _vector(-3, config.num_el)
+
+    dut.v15_data_vector.value = pack_vector(data, data_width)
+    dut.v15_weight_vector.value = pack_vector(weights, data_width)
+    await Timer(1, unit="ns")
+
+    packed_products = int(dut.v15_product_vector.value)
+    for element_index, (raw_value, raw_weight) in enumerate(zip(data, weights)):
+        value = signed_truncate(raw_value, data_width)
+        weight = signed_truncate(raw_weight, data_width)
+        expected = value * weight
+        actual = signed_truncate(
+            packed_products >> (element_index * product_width), product_width
+        )
+        assert actual == expected, (
+            f"V15 PE{element_index} product mismatch: got {actual}, expected "
+            f"a[{element_index}] * b[{element_index}] = {value} * {weight} "
+            f"= {expected}"
+        )
+        print(
+            f"[OK] pechain_v15 PE{element_index} value equal to expected "
+            f"({actual})"
+        )
+
+    print(
+        f"[OK] V15 mapped {config.num_el} vector elements to "
+        f"{config.num_el} parallel PEs"
+    )
+
+
+async def _run_v7_overflow_vector(dut, config: TestConfig) -> None:
+    data_width = len(dut.a)
+    max_operand = (1 << (data_width - 1)) - 1
+    overflow_vector = (max_operand,) * config.num_pe
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    dut.valid_in.value = 1
+    _drive_chain_vectors(dut, overflow_vector, overflow_vector, data_width)
+
+    for cycle in range(config.num_pe):
+        await _tick(dut)
+        if cycle < config.num_pe - 1:
+            assert dut.error_out_pe_chain_v7.value == 0, (
+                f"V7 reported overflow too early at cycle {cycle}"
+            )
+        await FallingEdge(dut.clk)
+        dut.valid_in.value = 0
+
+    assert dut.error_out_pe_chain_v7.value == 1, "V7 did not flag vector overflow"
+    assert dut.valid_out_pe_chain_v7.value == 0, "V7 overflow remained valid"
+    assert dut.y_pe_chain_v7.value.to_signed() == 0, "V7 overflow data was not zero"
+    overflow_map = int(dut.overflow_out_pe_chain_v7.value)
+    expected_overflow_map = _expected_v7_overflow_map(
+        overflow_vector, overflow_vector, data_width, len(dut.y_pe_chain_v7)
+    )
+    assert overflow_map == expected_overflow_map, (
+        f"V7 per-PE overflow map was 0b{overflow_map:0{config.num_pe}b}, "
+        f"expected 0b{expected_overflow_map:0{config.num_pe}b}"
+    )
+    for pe_index in range(config.num_pe):
+        status = "overflowing" if (overflow_map >> pe_index) & 1 else "not overflowing"
+        print(f"[OVERFLOW] V7 PE{pe_index}: {status}")
+    print(
+        f"[OK] pechain_v7 overflow map "
+        f"0b{overflow_map:0{config.num_pe}b} for {overflow_vector}"
+    )
+
+
+def _expected_v7_overflow_map(
+    data: tuple[int, ...],
+    weights: tuple[int, ...],
+    data_width: int,
+    acc_width: int,
+) -> int:
+    accumulator = 0
+    minimum = -(1 << (acc_width - 1))
+    maximum = (1 << (acc_width - 1)) - 1
+
+    for pe_index, (raw_data, raw_weight) in enumerate(zip(data, weights)):
+        value = signed_truncate(raw_data, data_width)
+        weight = signed_truncate(raw_weight, data_width)
+        next_accumulator = accumulator + value * weight
+        if not minimum <= next_accumulator <= maximum:
+            return 1 << pe_index
+        accumulator = next_accumulator
+    return 0
+
+
+def _assert_v7_pe_vector_mapping(
+    dut, driven, cycle: int, num_pe: int, data_width: int
+) -> list[tuple[int, int, int, int]]:
+    data_trace = int(dut.v7_pe_data_trace.value)
+    weight_trace = int(dut.v7_pe_weight_trace.value)
+    valid_trace = int(dut.v7_pe_valid_trace.value)
+    active_vector_ids = []
+
+    for pe_index in range(num_pe):
+        vector_id = cycle - pe_index
+        vector_is_present = 0 <= vector_id < len(driven)
+        expected_valid = vector_is_present and driven[vector_id][2]
+        actual_valid = bool((valid_trace >> pe_index) & 1)
+        assert actual_valid == expected_valid, (
+            f"V7 PE{pe_index} valid mismatch at iteration {cycle}: "
+            f"got {actual_valid}, expected {expected_valid} for vector {vector_id}"
+        )
+        if not expected_valid:
+            continue
+
+        expected_data = signed_truncate(driven[vector_id][0][pe_index], data_width)
+        expected_weight = signed_truncate(driven[vector_id][1][pe_index], data_width)
+        actual_data = signed_truncate(
+            data_trace >> (pe_index * data_width), data_width
+        )
+        actual_weight = signed_truncate(
+            weight_trace >> (pe_index * data_width), data_width
+        )
+        assert (actual_data, actual_weight) == (expected_data, expected_weight), (
+            f"V7 PE{pe_index} used the wrong vector at iteration {cycle}: "
+            f"got ({actual_data}, {actual_weight}), expected vector {vector_id} "
+            f"element {pe_index} = ({expected_data}, {expected_weight})"
+        )
+        active_vector_ids.append(
+            (pe_index, vector_id, actual_data, actual_weight)
+        )
+
+    vector_ids = [vector_id for _, vector_id, _, _ in active_vector_ids]
+    assert len(vector_ids) == len(set(vector_ids)), (
+        f"V7 iteration {cycle} assigned one vector to multiple PEs: {vector_ids}"
+    )
+    return active_vector_ids
 
 
 async def run_memory_system(dut, config: TestConfig) -> None:
@@ -185,76 +520,26 @@ async def run_memory_system(dut, config: TestConfig) -> None:
     dut.memory_load_we.value = 0
     dut.rst.value = 0
 
-    if version == "v8":
-        await _run_v8_transactions(
-            dut, config, data_width, data_vectors, weight_vectors
-        )
-    elif version == "v9":
-        await _run_v9_transactions(
-            dut, config, data_width, data_vectors, weight_vectors
-        )
-    elif version == "v10":
-        await _run_v10_transactions(
-            dut, config, data_width, data_vectors, weight_vectors
-        )
-    else:
+    if version == "v11":
         await _verify_v11_memories(dut, data_width, data_vectors, weight_vectors)
-        await _run_v11_transactions(
-            dut, config, data_width, data_vectors, weight_vectors
-        )
+    run_transactions = {
+        "v8": _run_v8_transactions,
+        "v9": _run_v9_transactions,
+        "v10": _run_v10_transactions,
+        "v11": _run_v11_transactions,
+    }[version]
+    await run_transactions(dut, config, data_width, data_vectors, weight_vectors)
 
 
 async def _initialize_memory_system(dut) -> None:
-    cocotb.start_soon(Clock(dut.clk, 2, unit="ns").start())
-    dut.a.value = 0
-    dut.b.value = 0
-    dut.acc_in.value = 0
-    dut.chain_data_vector.value = 0
-    dut.chain_weight_vector.value = 0
-    dut.valid_in.value = 0
-    dut.ram_we.value = 0
-    dut.ram_write_addr.value = 0
-    dut.ram_write_data.value = 0
-    dut.ram_read_addr.value = 0
-    dut.memory_load_we.value = 0
-    dut.memory_load_weights.value = 0
-    dut.memory_load_addr.value = 0
-    dut.memory_load_data.value = 0
-    dut.data_addr.value = 0
-    dut.weight_addr.value = 0
-    dut.v8_valid_in.value = 0
-    dut.v11_valid_in.value = 0
-    dut.special_valid_in.value = 0
-    dut.special_data_vectors.value = 0
-    dut.special_weight_vectors.value = 0
-    dut.special_biases.value = 0
-    dut.special_result_addr.value = 0
-    dut.start.value = 0
-    dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _reset_dut(dut, MEMORY_INPUTS)
 
 
 def _assert_memory_reset(dut, version: str) -> None:
-    if version == "v8":
-        assert dut.valid_out_pe_chain_v8.value == 0, "V8 valid_out was not reset"
-        assert dut.y_pe_chain_v8.value.to_signed() == 0, "V8 output was not reset"
-    elif version == "v9":
-        assert dut.done_v9.value == 0, "V9 done was not cleared by reset"
-        assert dut.result_v9.value.to_signed() == 0, "V9 result was not cleared by reset"
-    elif version == "v10":
-        assert dut.busy_v10.value == 0, "V10 busy was not cleared by reset"
-        assert dut.done_v10.value == 0, "V10 done was not cleared by reset"
-        assert dut.result_v10.value.to_signed() == 0, "V10 result was not cleared by reset"
-    elif version == "v11":
-        assert dut.valid_out_pe_chain_v11.value == 0, "V11 valid_out was not reset"
-        assert dut.y_pe_chain_v11.value.to_signed() == 0, "V11 output was not reset"
-    else:
-        assert dut.busy_v12.value == 0, "V12 busy was not cleared by reset"
-        assert dut.done_v12.value == 0, "V12 done was not cleared by reset"
-        assert dut.error_v12.value == 0, "V12 error was not cleared by reset"
-        assert dut.result_v12.value.to_signed() == 0, "V12 result was not cleared by reset"
+    for name in MEMORY_RESET_OUTPUTS[version]:
+        assert int(getattr(dut, name).value) == 0, (
+            f"{version.upper()} {name} was not cleared by reset"
+        )
 
 
 async def _test_standalone_ram(dut) -> None:
@@ -262,8 +547,7 @@ async def _test_standalone_ram(dut) -> None:
     dut.ram_we.value = 1
     dut.ram_write_addr.value = 2
     dut.ram_write_data.value = 0xA5
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     await FallingEdge(dut.clk)
     dut.ram_we.value = 0
     dut.ram_read_addr.value = 2
@@ -279,8 +563,7 @@ async def _load_vectors(dut, data_width: int, data_vectors, weight_vectors) -> N
             dut.memory_load_weights.value = load_weights
             dut.memory_load_addr.value = address
             dut.memory_load_data.value = pack_vector(values, data_width)
-            await RisingEdge(dut.clk)
-            await ReadOnly()
+            await _tick(dut)
 
 
 async def _run_v8_transactions(
@@ -296,8 +579,7 @@ async def _run_v8_transactions(
         dut.v8_valid_in.value = valid
         driven.append(transaction)
 
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         completed_cycle = cycle - (config.num_pe - 1)
         completed_address, expected_valid = (
             driven[completed_cycle] if completed_cycle >= 0 else (0, False)
@@ -350,8 +632,7 @@ async def _run_v11_transactions(
         dut.weight_addr.value = address
         dut.v11_valid_in.value = valid
 
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         completed_cycle = cycle - (config.num_pe - 1)
         expected_valid = completed_cycle >= 0
         assert bool(dut.valid_out_pe_chain_v11.value) == expected_valid, (
@@ -391,8 +672,7 @@ async def _run_v9_transactions(
     )
 
     dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     _assert_memory_reset(dut, "v9")
 
 
@@ -402,43 +682,28 @@ async def _run_v9_command(
     dut.data_addr.value = address
     dut.weight_addr.value = address
     dut.start.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
-    _show_v9_status(dut, "start")
+    await _tick(dut)
     await FallingEdge(dut.clk)
     if not hold_start:
         dut.start.value = 0
 
     for _ in range(num_pe + 4):
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         if dut.done_v9.value == 1:
             assert_signal_equals("V9 result", dut.result_v9, expected)
-            _show_v9_status(dut, "done")
             await FallingEdge(dut.clk)
             if hold_start:
-                await RisingEdge(dut.clk)
-                await ReadOnly()
+                await _tick(dut)
                 assert dut.done_v9.value == 1, "V9 left DONE while start was still asserted"
                 await FallingEdge(dut.clk)
                 dut.start.value = 0
-            await RisingEdge(dut.clk)
-            await ReadOnly()
+            await _tick(dut)
             assert dut.done_v9.value == 0, "V9 did not return from DONE to IDLE"
             print(f"[OK] V9 FSM completed with expected result ({expected})")
             await FallingEdge(dut.clk)
             return
         await FallingEdge(dut.clk)
     assert False, "V9 timed out waiting for done"
-
-
-def _show_v9_status(dut, phase: str) -> None:
-    print(
-        f"[STATUS] V9 phase={phase} "
-        f"start={int(dut.start.value)} "
-        f"done={int(dut.done_v9.value)} "
-        f"result={dut.result_v9.value.to_signed()}"
-    )
 
 
 async def _run_v10_transactions(
@@ -478,17 +743,14 @@ async def _run_v10_command(
     dut.data_addr.value = address
     dut.weight_addr.value = address
     dut.start.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.busy_v10.value == 1, "V10 did not assert busy for an accepted command"
     assert dut.done_v10.value == 0, "V10 asserted done before the result was ready"
-    _show_v10_status(dut, "start")
 
     await FallingEdge(dut.clk)
     dut.start.value = 0
     if try_retrigger:
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         assert dut.busy_v10.value == 1, "V10 dropped busy before completion"
         await FallingEdge(dut.clk)
         rejected_address = 1 - address
@@ -497,8 +759,7 @@ async def _run_v10_command(
         dut.start.value = 1
 
     for _ in range(num_pe + 4):
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         if dut.done_v10.value == 1:
             break
         assert dut.busy_v10.value == 1, "V10 busy was low while the command was running"
@@ -510,26 +771,22 @@ async def _run_v10_command(
     assert dut.result_v10.value.to_signed() == expected, (
         "V10 result did not match the accepted command"
     )
-    _show_v10_status(dut, "done")
 
     await FallingEdge(dut.clk)
     if try_retrigger:
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         assert dut.done_v10.value == 1, "V10 did not hold done for a held retrigger attempt"
         assert dut.busy_v10.value == 0, "V10 retriggered while waiting for start to be released"
         await FallingEdge(dut.clk)
 
     dut.start.value = 0
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.done_v10.value == 0, "V10 did not clear done after start was released"
     assert dut.busy_v10.value == 0, "V10 was busy without an accepted command"
 
     if try_retrigger:
         for _ in range(5):
-            await RisingEdge(dut.clk)
-            await ReadOnly()
+            await _tick(dut)
             assert dut.busy_v10.value == 0, "V10 executed the rejected retrigger"
             assert dut.done_v10.value == 0, "V10 completed the rejected retrigger"
             assert dut.result_v10.value.to_signed() == expected, (
@@ -539,16 +796,6 @@ async def _run_v10_command(
 
     scenario = "with retrigger attempt" if try_retrigger else "without retrigger"
     print(f"[OK] V10 command completed {scenario} ({expected})")
-
-
-def _show_v10_status(dut, phase: str) -> None:
-    print(
-        f"[STATUS] V10 phase={phase} "
-        f"start={int(dut.start.value)} "
-        f"done={int(dut.done_v10.value)} "
-        f"busy={int(dut.busy_v10.value)} "
-        f"result={dut.result_v10.value.to_signed()}"
-    )
 
 
 async def run_v12_system(dut, config: TestConfig) -> None:
@@ -563,15 +810,13 @@ async def run_v12_system(dut, config: TestConfig) -> None:
     dut.memory_load_weights.value = 1
     dut.memory_load_addr.value = 0
     dut.memory_load_data.value = pack_vector([9] * config.num_pe, len(dut.a))
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.busy_v12.value == 0, "V12 accepted B before entering LOAD_A"
 
     await FallingEdge(dut.clk)
     dut.memory_load_we.value = 0
     dut.start.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.busy_v12.value == 0, "V12 accepted start before loading operands"
     assert dut.done_v12.value == 0, "V12 completed without loaded operands"
     await FallingEdge(dut.clk)
@@ -586,8 +831,7 @@ async def run_v12_system(dut, config: TestConfig) -> None:
 
     await FallingEdge(dut.clk)
     dut.rst.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     _assert_memory_reset(dut, "v12")
 
 
@@ -606,8 +850,7 @@ async def _run_v12_transaction(
         dut.memory_load_weights.value = 0
         dut.memory_load_addr.value = write_address
         dut.memory_load_data.value = pack_vector(values, data_width)
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
 
     for write_address, values in enumerate(weight_vectors):
         await FallingEdge(dut.clk)
@@ -615,10 +858,7 @@ async def _run_v12_transaction(
         dut.memory_load_weights.value = 1
         dut.memory_load_addr.value = write_address
         dut.memory_load_data.value = pack_vector(values, data_width)
-        await RisingEdge(dut.clk)
-        await ReadOnly()
-
-    _show_v12_status(dut, "load")
+        await _tick(dut)
 
     # Once LOAD_B has started, a late A write must not alter operand memory.
     await FallingEdge(dut.clk)
@@ -626,29 +866,24 @@ async def _run_v12_transaction(
     dut.memory_load_weights.value = 0
     dut.memory_load_addr.value = address
     dut.memory_load_data.value = pack_vector([9] * config.num_pe, data_width)
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
 
     await FallingEdge(dut.clk)
     dut.memory_load_we.value = 0
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.busy_v12.value == 0, "V12 became busy before start"
 
     await FallingEdge(dut.clk)
     dut.data_addr.value = address
     dut.weight_addr.value = address
     dut.start.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.busy_v12.value == 1, "V12 did not enter START_CALC"
     assert dut.done_v12.value == 0, "V12 asserted done before starting the pipeline"
-    _show_v12_status(dut, "start")
 
     await FallingEdge(dut.clk)
     dut.start.value = 0
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     expected_error = int(config.overlap and address > 0)
     assert int(dut.error_v12.value) == expected_error, (
         "V12 overlap error did not retain its expected state"
@@ -659,18 +894,15 @@ async def _run_v12_transaction(
         dut.data_addr.value = 1 - address
         dut.weight_addr.value = 1 - address
         dut.start.value = 1
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         assert dut.busy_v12.value == 1, "V12 was not busy during the overlap attempt"
         assert dut.error_v12.value == 1, "V12 did not flag the overlap attempt"
-        _show_v12_status(dut, "overlap")
         await FallingEdge(dut.clk)
         dut.start.value = 0
 
     for _ in range(config.num_pe + 3):
         await FallingEdge(dut.clk)
-        await RisingEdge(dut.clk)
-        await ReadOnly()
+        await _tick(dut)
         if dut.done_v12.value == 1:
             break
         assert dut.busy_v12.value == 1, "V12 left WAIT_PIPELINE before valid_out"
@@ -682,25 +914,11 @@ async def _run_v12_transaction(
         expected += 1
     assert_signal_equals("V12 result", dut.result_v12, expected)
     assert dut.busy_v12.value == 0, "V12 remained busy after capturing the result"
-    _show_v12_status(dut, "done")
 
     await FallingEdge(dut.clk)
-    await RisingEdge(dut.clk)
-    await ReadOnly()
+    await _tick(dut)
     assert dut.done_v12.value == 0, "V12 did not return to IDLE after start was released"
     print(f"[OK] V12 load/execute sequence completed ({expected})")
-
-
-def _show_v12_status(dut, phase: str) -> None:
-    print(
-        f"[STATUS] V12 phase={phase} "
-        f"load={int(dut.memory_load_we.value)} "
-        f"start={int(dut.start.value)} "
-        f"done={int(dut.done_v12.value)} "
-        f"busy={int(dut.busy_v12.value)} "
-        f"error={int(dut.error_v12.value)} "
-        f"result={dut.result_v12.value.to_signed()}"
-    )
 
 
 def _pack_unit_vectors(vectors, width: int) -> int:
@@ -711,13 +929,126 @@ def _pack_unit_vectors(vectors, width: int) -> int:
     )
 
 
+def _drive_special_request(dut, data, weights, biases, data_width: int) -> None:
+    dut.special_data_vectors.value = _pack_unit_vectors(data, data_width)
+    dut.special_weight_vectors.value = _pack_unit_vectors(weights, data_width)
+    dut.special_biases.value = pack_vector(
+        biases, len(dut.special_biases) // len(data)
+    )
+    dut.special_valid_in.value = 1
+
+
+def _clear_special_request(dut) -> None:
+    for name in (
+        "special_valid_in", "special_data_vectors", "special_weight_vectors",
+        "special_biases",
+    ):
+        getattr(dut, name).value = 0
+
+
 async def run_vspecial(dut, config: TestConfig) -> None:
+    await _run_biased_dot_product_system(dut, config, "vspecial", "VSpecial")
+
+
+async def run_v13_system(dut, config: TestConfig) -> None:
+    if config.overflow:
+        await _run_v13_overflow_case(dut, config)
+        return
+    await _run_biased_dot_product_system(dut, config, "v13", "V13")
+
+
+async def _run_v13_overflow_case(dut, config: TestConfig) -> None:
     await _initialize_memory_system(dut)
-    assert dut.busy_vspecial.value == 0, "VSpecial busy was not cleared by reset"
-    assert dut.done_vspecial.value == 0, "VSpecial done was not cleared by reset"
+    assert dut.busy_v13.value == 0, "V13 busy was not cleared by reset"
+    assert dut.done_v13.value == 0, "V13 done was not cleared by reset"
+    assert dut.error_v13.value == 0, "V13 error was not cleared by reset"
+    assert int(dut.overflow_v13.value) == 0, (
+        "V13 overflow map was not cleared by reset"
+    )
 
     data_width = len(dut.a)
-    acc_width = len(dut.special_biases) // config.num_dots
+    acc_width = len(dut.result_v13) - 1
+    max_operand = (1 << (data_width - 1)) - 1
+    overflow_vector = (max_operand,) * config.num_pe
+    safe_vector = (1,) * config.num_pe
+    vectors = (overflow_vector,) + (safe_vector,) * (config.num_dots - 1)
+    expected_pe_map = _expected_v7_overflow_map(
+        overflow_vector, overflow_vector, data_width, acc_width
+    )
+    expected_overflow_map = expected_pe_map
+    assert expected_overflow_map.bit_count() == 1, (
+        "V13 overflow stimulus must select exactly one PE"
+    )
+
+    overflow_pe_index = expected_pe_map.bit_length() - 1
+    expected_results = (0,) + (config.num_pe - 1,) * (config.num_dots - 1)
+
+    await FallingEdge(dut.clk)
+    _drive_special_request(dut, vectors, vectors, (), data_width)
+    dut.rst.value = 0
+    await _tick(dut)
+    assert dut.busy_v13.value == 1, "V13 did not accept the overflow request"
+
+    await FallingEdge(dut.clk)
+    _clear_special_request(dut)
+
+    for _ in range(config.num_dots * (config.num_pe + 1) + 4):
+        await _tick(dut)
+        if dut.done_v13.value == 1:
+            break
+        assert dut.busy_v13.value == 1, "V13 dropped busy after an overflow"
+        await FallingEdge(dut.clk)
+    else:
+        assert False, "V13 timed out after an overflow"
+
+    assert dut.busy_v13.value == 0, "V13 remained busy after an overflow"
+    assert dut.error_v13.value == 1, "V13 did not report the overflow"
+    actual_overflow_map = int(dut.overflow_v13.value)
+    assert actual_overflow_map == expected_overflow_map, (
+        f"V13 overflow map was 0b{actual_overflow_map:0{config.num_dots * config.num_pe}b}, "
+        f"expected 0b{expected_overflow_map:0{config.num_dots * config.num_pe}b}"
+    )
+
+    await FallingEdge(dut.clk)
+    for unit_index, expected_result in enumerate(expected_results):
+        dut.special_result_addr.value = unit_index
+        await Timer(1, unit="ps")
+        assert_signal_equals(
+            f"V13 overflow result RAM address {unit_index}",
+            dut.result_v13,
+            expected_result,
+        )
+        status = (actual_overflow_map >> (unit_index * config.num_pe)) & (
+            (1 << config.num_pe) - 1
+        )
+        if status:
+            print(
+                f"[PE{overflow_pe_index} OVERFLOW] V13 unit {unit_index}; "
+                "inactive for the remaining units in this calculation period"
+            )
+
+    print(
+        f"[OK] V13 completed with overflow map "
+        f"0b{actual_overflow_map:0{config.num_dots * config.num_pe}b}"
+    )
+
+
+async def _run_biased_dot_product_system(
+    dut, config: TestConfig, signal_suffix: str, label: str
+) -> None:
+    await _initialize_memory_system(dut)
+    busy = getattr(dut, f"busy_{signal_suffix}")
+    done = getattr(dut, f"done_{signal_suffix}")
+    result = getattr(dut, f"result_{signal_suffix}")
+    assert busy.value == 0, f"{label} busy was not cleared by reset"
+    assert done.value == 0, f"{label} done was not cleared by reset"
+    if signal_suffix == "v13":
+        assert dut.error_v13.value == 0, "V13 error was not cleared by reset"
+        assert int(dut.overflow_v13.value) == 0, (
+            "V13 overflow map was not cleared by reset"
+        )
+
+    data_width = len(dut.a)
     base_data_vectors = tuple(_vector(start, config.num_pe) for start in (2, -4, 9))
     base_weight_vectors = tuple(_vector(start, config.num_pe) for start in (3, 5, -9))
     base_biases = (7, -9, 9)
@@ -741,34 +1072,22 @@ async def run_vspecial(dut, config: TestConfig) -> None:
         for unit_index, (data, weights, bias) in enumerate(
             zip(data_vectors, weight_vectors, biases)
         ):
-            _show_vspecial_calculation(
-                unit_index, data, weights, bias, data_width
+            _show_biased_dot_product_calculation(
+                label, unit_index, data, weights, bias, data_width
             )
     if not config.passed:
         expected_results[0] += 1
 
     await FallingEdge(dut.clk)
-    dut.special_data_vectors.value = _pack_unit_vectors(data_vectors, data_width)
-    dut.special_weight_vectors.value = _pack_unit_vectors(weight_vectors, data_width)
-    bias_mask = (1 << acc_width) - 1
-    dut.special_biases.value = sum(
-        (bias & bias_mask) << (index * acc_width)
-        for index, bias in enumerate(biases)
-    )
-
+    _drive_special_request(dut, data_vectors, weight_vectors, biases, data_width)
     dut.rst.value = 0
-    dut.special_valid_in.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
-    assert dut.busy_vspecial.value == 1, "VSpecial did not accept the request"
-    assert dut.done_vspecial.value == 0, "VSpecial completed too early"
+    await _tick(dut)
+    assert busy.value == 1, f"{label} did not accept the request"
+    assert done.value == 0, f"{label} completed too early"
 
     await FallingEdge(dut.clk)
-    dut.special_valid_in.value = 0
     # Inputs are captured with the accepted request and may change while busy.
-    dut.special_data_vectors.value = 0
-    dut.special_weight_vectors.value = 0
-    dut.special_biases.value = 0
+    _clear_special_request(dut)
 
     if config.overlap:
         overlap_data = tuple(
@@ -782,44 +1101,40 @@ async def run_vspecial(dut, config: TestConfig) -> None:
         overlap_biases = tuple(
             100 + unit_index for unit_index in range(config.num_dots)
         )
-        dut.special_data_vectors.value = _pack_unit_vectors(overlap_data, data_width)
-        dut.special_weight_vectors.value = _pack_unit_vectors(overlap_weights, data_width)
-        dut.special_biases.value = sum(
-            (bias & bias_mask) << (index * acc_width)
-            for index, bias in enumerate(overlap_biases)
+        _drive_special_request(
+            dut, overlap_data, overlap_weights, overlap_biases, data_width
         )
-        dut.special_valid_in.value = 1
-        await RisingEdge(dut.clk)
-        await ReadOnly()
-        assert dut.busy_vspecial.value == 1, (
-            "VSpecial was not busy during the overlap attempt"
+        await _tick(dut)
+        assert busy.value == 1, (
+            f"{label} was not busy during the overlap attempt"
         )
-        assert dut.done_vspecial.value == 0, (
-            "VSpecial completed during the overlap attempt"
+        assert done.value == 0, (
+            f"{label} completed during the overlap attempt"
         )
         await FallingEdge(dut.clk)
-        dut.special_valid_in.value = 0
-        dut.special_data_vectors.value = 0
-        dut.special_weight_vectors.value = 0
-        dut.special_biases.value = 0
+        _clear_special_request(dut)
 
     for _ in range(config.num_dots * (config.num_pe + 1) + 4):
-        await RisingEdge(dut.clk)
-        await ReadOnly()
-        if dut.done_vspecial.value == 1:
+        await _tick(dut)
+        if done.value == 1:
             break
-        assert dut.busy_vspecial.value == 1, "VSpecial dropped busy before completion"
+        assert busy.value == 1, f"{label} dropped busy before completion"
         await FallingEdge(dut.clk)
     else:
-        assert False, "VSpecial timed out waiting for completion"
+        assert False, f"{label} timed out waiting for completion"
 
-    assert dut.busy_vspecial.value == 0, "VSpecial remained busy after completion"
+    assert busy.value == 0, f"{label} remained busy after completion"
+    if signal_suffix == "v13":
+        assert dut.error_v13.value == 0, "V13 reported an unexpected overflow"
+        assert int(dut.overflow_v13.value) == 0, (
+            "V13 reported unexpected per-unit overflow bits"
+        )
     await FallingEdge(dut.clk)
     for address, expected in enumerate(expected_results):
         dut.special_result_addr.value = address
         await Timer(1, unit="ps")
         assert_signal_equals(
-            f"VSpecial result RAM address {address}", dut.result_vspecial, expected
+            f"{label} result RAM address {address}", result, expected
         )
 
     # Present the next request while done is still asserted. It must be accepted
@@ -841,63 +1156,60 @@ async def run_vspecial(dut, config: TestConfig) -> None:
             back_to_back_data, back_to_back_weights, back_to_back_biases
         )
     ]
-    dut.special_data_vectors.value = _pack_unit_vectors(
-        back_to_back_data, data_width
+    _drive_special_request(
+        dut,
+        back_to_back_data,
+        back_to_back_weights,
+        back_to_back_biases,
+        data_width,
     )
-    dut.special_weight_vectors.value = _pack_unit_vectors(
-        back_to_back_weights, data_width
+    await _tick(dut)
+    assert busy.value == 1, (
+        f"{label} did not accept a request immediately after completion"
     )
-    dut.special_biases.value = sum(
-        (bias & bias_mask) << (index * acc_width)
-        for index, bias in enumerate(back_to_back_biases)
-    )
-    dut.special_valid_in.value = 1
-    await RisingEdge(dut.clk)
-    await ReadOnly()
-    assert dut.busy_vspecial.value == 1, (
-        "VSpecial did not accept a request immediately after completion"
-    )
-    assert dut.done_vspecial.value == 0, (
-        "VSpecial done was not cleared by the back-to-back request"
+    assert done.value == 0, (
+        f"{label} done was not cleared by the back-to-back request"
     )
 
     await FallingEdge(dut.clk)
-    dut.special_valid_in.value = 0
-    dut.special_data_vectors.value = 0
-    dut.special_weight_vectors.value = 0
-    dut.special_biases.value = 0
+    _clear_special_request(dut)
 
     for _ in range(config.num_dots * (config.num_pe + 1) + 4):
-        await RisingEdge(dut.clk)
-        await ReadOnly()
-        if dut.done_vspecial.value == 1:
+        await _tick(dut)
+        if done.value == 1:
             break
-        assert dut.busy_vspecial.value == 1, (
-            "VSpecial dropped busy during the back-to-back request"
+        assert busy.value == 1, (
+            f"{label} dropped busy during the back-to-back request"
         )
         await FallingEdge(dut.clk)
     else:
-        assert False, "VSpecial timed out on the back-to-back request"
+        assert False, f"{label} timed out on the back-to-back request"
 
-    assert dut.busy_vspecial.value == 0, (
-        "VSpecial remained busy after the back-to-back request"
+    assert busy.value == 0, (
+        f"{label} remained busy after the back-to-back request"
     )
+    if signal_suffix == "v13":
+        assert dut.error_v13.value == 0, (
+            "V13 reported an unexpected back-to-back overflow"
+        )
+        assert int(dut.overflow_v13.value) == 0, (
+            "V13 retained unexpected back-to-back overflow bits"
+        )
     await FallingEdge(dut.clk)
     for address, expected in enumerate(back_to_back_expected):
         dut.special_result_addr.value = address
         await Timer(1, unit="ps")
         assert_signal_equals(
-            f"VSpecial back-to-back result RAM address {address}",
-            dut.result_vspecial,
+            f"{label} back-to-back result RAM address {address}",
+            result,
             expected,
         )
 
-    await RisingEdge(dut.clk)
-    await ReadOnly()
-    assert dut.done_vspecial.value == 0, "VSpecial done was not a one-cycle pulse"
+    await _tick(dut)
+    assert done.value == 0, f"{label} done was not a one-cycle pulse"
     scenario = "with overlap attempt" if config.overlap else "without overlap"
     print(
-        f"[OK] VSpecial stored biased dot products {scenario}; "
+        f"[OK] {label} stored biased dot products {scenario}; "
         f"back-to-back results {back_to_back_expected}"
     )
 
@@ -990,7 +1302,67 @@ def _show_vector_calculation(data, weights, label: str) -> None:
         )
 
 
-def _show_vspecial_calculation(
+def _show_v14_calculation(
+    cycle: int,
+    data,
+    weights,
+    products,
+    data_width: int,
+    accumulator_width: int,
+    result: int,
+    overflow_map: int,
+) -> None:
+    """Show the parallel PE products and each following reduction step."""
+    running_total = 0
+    overflow_seen = False
+    minimum = -(1 << (accumulator_width - 1))
+    maximum = (1 << (accumulator_width - 1)) - 1
+    print(
+        f"[DEBUG] V14 cycle {cycle}: {len(products)} PEs calculate in parallel"
+    )
+    for pe_index, (raw_value, raw_weight, product) in enumerate(
+        zip(data, weights, products)
+    ):
+        value = signed_truncate(raw_value, data_width)
+        weight = signed_truncate(raw_weight, data_width)
+        print(
+            f"[DEBUG] V14 cycle {cycle} PE{pe_index} product: "
+            f"data[{pe_index}] * weight[{pe_index}] = "
+            f"{value} * {weight} = {product}"
+        )
+        if overflow_seen:
+            print(
+                f"[DEBUG] V14 cycle {cycle} reducer after PE{pe_index}: "
+                "skipped because an earlier step overflowed"
+            )
+            continue
+
+        reduced_total = running_total + product
+        if (overflow_map >> pe_index) & 1:
+            print(
+                f"[DEBUG] V14 cycle {cycle} reducer after PE{pe_index}: "
+                f"{running_total} + {product} = {reduced_total} -> overflow "
+                f"(range {minimum}..{maximum})"
+            )
+            overflow_seen = True
+        else:
+            print(
+                f"[DEBUG] V14 cycle {cycle} reducer after PE{pe_index}: "
+                f"{running_total} + {product} = {reduced_total}"
+            )
+            running_total = reduced_total
+
+    if overflow_map:
+        print(
+            f"[DEBUG] V14 cycle {cycle} result: error, output={result}, "
+            f"overflow_map=0b{overflow_map:0{len(products)}b}"
+        )
+    else:
+        print(f"[DEBUG] V14 cycle {cycle} result: output={result}, valid=1")
+
+
+def _show_biased_dot_product_calculation(
+    label: str,
     unit_index: int,
     data: tuple[int, ...],
     weights: tuple[int, ...],
@@ -998,7 +1370,7 @@ def _show_vspecial_calculation(
     data_width: int,
 ) -> None:
     running_total = bias
-    print(f"[CALCULUS] VSpecial unit {unit_index}: bias = {bias}")
+    print(f"[CALCULUS] {label} unit {unit_index}: bias = {bias}")
     for pass_index, (raw_value, raw_weight) in enumerate(zip(data, weights)):
         value = signed_truncate(raw_value, data_width)
         weight = signed_truncate(raw_weight, data_width)

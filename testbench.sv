@@ -45,7 +45,10 @@ endmodule
 module pe_testbench #(
 	parameter int DATA_WIDTH = 8,
 	parameter int NUM_PE = 4,
+	parameter int NUM_EL = 4,
 	parameter int NUM_DOT_UNITS = 3,
+	parameter int V7_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
+	parameter int V14_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int SPECIAL_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int SPECIAL_RESULT_WIDTH = SPECIAL_ACC_WIDTH + 1,
 	parameter int SPECIAL_ADDR_WIDTH = (NUM_DOT_UNITS <= 1) ? 1 : $clog2(NUM_DOT_UNITS)
@@ -76,6 +79,8 @@ module pe_testbench #(
 	input logic signed [DATA_WIDTH-1:0] acc_in,
 	input logic [(NUM_PE*DATA_WIDTH)-1:0] chain_data_vector,
 	input logic [(NUM_PE*DATA_WIDTH)-1:0] chain_weight_vector,
+	input logic [(NUM_EL*DATA_WIDTH)-1:0] v15_data_vector,
+	input logic [(NUM_EL*DATA_WIDTH)-1:0] v15_weight_vector,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v0,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v1,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe,
@@ -88,8 +93,13 @@ module pe_testbench #(
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe_array_3,
 	output logic signed [(2*DATA_WIDTH)+$clog2(NUM_PE)-1:0] y_pe_chain_v5,
 	output logic signed [(2*DATA_WIDTH)+$clog2(NUM_PE)-1:0] y_pe_chain_v6,
-	output logic signed [(2*DATA_WIDTH)+$clog2(NUM_PE)-1:0] y_pe_chain_v7,
+	output logic signed [V7_ACC_WIDTH-1:0] y_pe_chain_v7,
 	output logic valid_out_pe_chain_v7,
+	output logic error_out_pe_chain_v7,
+	output logic [NUM_PE-1:0] overflow_out_pe_chain_v7,
+	output logic [(NUM_PE*DATA_WIDTH)-1:0] v7_pe_data_trace,
+	output logic [(NUM_PE*DATA_WIDTH)-1:0] v7_pe_weight_trace,
+	output logic [NUM_PE-1:0] v7_pe_valid_trace,
 	output logic [DATA_WIDTH-1:0] ram_read_data,
 	output logic signed [(2*DATA_WIDTH)+$clog2(NUM_PE)-1:0] y_pe_chain_v8,
 	output logic valid_out_pe_chain_v8,
@@ -106,6 +116,17 @@ module pe_testbench #(
 	output logic busy_v12,
 	output logic done_v12,
 	output logic error_v12,
+	output logic signed [SPECIAL_RESULT_WIDTH-1:0] result_v13,
+	output logic busy_v13,
+	output logic done_v13,
+	output logic error_v13,
+	output logic [(NUM_DOT_UNITS*NUM_PE)-1:0] overflow_v13,
+	output logic signed [V14_ACC_WIDTH-1:0] y_pe_chain_v14,
+	output logic valid_out_pe_chain_v14,
+	output logic error_out_pe_chain_v14,
+	output logic [NUM_PE-1:0] overflow_out_pe_chain_v14,
+	output logic [(NUM_PE*2*DATA_WIDTH)-1:0] v14_pe_product_trace,
+	output logic [(NUM_EL*2*DATA_WIDTH)-1:0] v15_product_vector,
 	output logic signed [SPECIAL_RESULT_WIDTH-1:0] result_vspecial,
 	output logic busy_vspecial,
 	output logic done_vspecial
@@ -118,6 +139,10 @@ module pe_testbench #(
 	logic signed [DATA_WIDTH-1:0] special_data [0:NUM_DOT_UNITS-1][0:NUM_PE-1];
 	logic signed [DATA_WIDTH-1:0] special_weights [0:NUM_DOT_UNITS-1][0:NUM_PE-1];
 	logic signed [SPECIAL_ACC_WIDTH-1:0] special_bias [0:NUM_DOT_UNITS-1];
+	logic signed [(2*DATA_WIDTH)-1:0] v14_products [0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] v15_data [0:NUM_EL-1];
+	logic signed [DATA_WIDTH-1:0] v15_weights [0:NUM_EL-1];
+	logic signed [(2*DATA_WIDTH)-1:0] v15_products [0:NUM_EL-1];
 
 	pe_v0 #(.DATA_WIDTH(DATA_WIDTH)) v0_dut (.a(a), .b(b), .y(y_v0));
 	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) v1_dut (.a(a), .b(b), .acc_in(acc_in), .y(y_v1));
@@ -144,6 +169,10 @@ module pe_testbench #(
 			assign array_a[i] = chain_data_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
 			assign array_b[i] = chain_weight_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
 		end
+		for (i = 0; i < NUM_EL; i++) begin : gen_v15_inputs
+			assign v15_data[i] = v15_data_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
+			assign v15_weights[i] = v15_weight_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
+		end
 		for (i = 0; i < NUM_DOT_UNITS; i++) begin : gen_special_units
 			assign special_bias[i] = special_biases[(i * SPECIAL_ACC_WIDTH) +: SPECIAL_ACC_WIDTH];
 			for (genvar j = 0; j < NUM_PE; j++) begin : gen_special_elements
@@ -164,10 +193,26 @@ module pe_testbench #(
 	pe_chain_v6 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE)) pe_chain_v6_dut (
 		.clk(clk), .rst(rst), .a(array_a), .b(array_b), .y(y_pe_chain_v6)
 	);
-	pe_chain_v7 #(.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE)) pe_chain_v7_dut (
+	pe_chain_v7 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE), .ACC_WIDTH(V7_ACC_WIDTH)
+	) pe_chain_v7_dut (
 		.clk(clk), .rst(rst), .valid_in(valid_in), .a(array_a), .b(array_b),
-		.y(y_pe_chain_v7), .valid_out(valid_out_pe_chain_v7)
+		.y(y_pe_chain_v7), .valid_out(valid_out_pe_chain_v7),
+		.error_out(error_out_pe_chain_v7),
+		.overflow_out(overflow_out_pe_chain_v7)
 	);
+	// Flatten the operands present at each V7 PE so the cocotb test can prove
+	// the temporal mapping PE[i] <- input_vector[iteration-i].
+	generate
+		for (genvar trace_index = 0; trace_index < NUM_PE; trace_index++) begin : gen_v7_trace
+			assign v7_pe_data_trace[(trace_index * DATA_WIDTH) +: DATA_WIDTH] =
+				pe_chain_v7_dut.gen_pipeline_pe[trace_index].stage_a;
+			assign v7_pe_weight_trace[(trace_index * DATA_WIDTH) +: DATA_WIDTH] =
+				pe_chain_v7_dut.gen_pipeline_pe[trace_index].stage_b;
+			assign v7_pe_valid_trace[trace_index] =
+				pe_chain_v7_dut.chain_valid[trace_index];
+		end
+	endgenerate
 
 	simple_ram #(.DATA_WIDTH(DATA_WIDTH), .ADDR_WIDTH(2)) ram_dut (
 		.clk(clk), .we(ram_we), .write_addr(ram_write_addr),
@@ -212,6 +257,43 @@ module pe_testbench #(
 		.weight_addr(weight_addr), .start(start), .busy(busy_v12),
 		.done(done_v12), .error(error_v12), .result(result_v12)
 	);
+	pe_system_v13 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE), .NUM_UNITS(NUM_DOT_UNITS),
+		.ACC_WIDTH(SPECIAL_ACC_WIDTH), .RESULT_WIDTH(SPECIAL_RESULT_WIDTH),
+		.RESULT_ADDR_WIDTH(SPECIAL_ADDR_WIDTH)
+	) pe_system_v13_dut (
+		.clk(clk), .rst(rst), .valid_in(special_valid_in),
+		.data(special_data), .weights(special_weights), .biases(special_bias),
+		.result_read_addr(special_result_addr), .result_read_data(result_v13),
+		.busy(busy_v13), .done(done_v13), .error(error_v13),
+		.overflow_out(overflow_v13)
+	);
+	pe_chain_v14 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE), .ACC_WIDTH(V14_ACC_WIDTH)
+	) pe_chain_v14_dut (
+		.clk(clk), .rst(rst), .valid_in(valid_in), .a(array_a), .b(array_b),
+		.y(y_pe_chain_v14), .valid_out(valid_out_pe_chain_v14),
+		.error_out(error_out_pe_chain_v14),
+		.overflow_out(overflow_out_pe_chain_v14),
+		.products(v14_products)
+	);
+	generate
+		for (genvar v14_index = 0; v14_index < NUM_PE; v14_index++) begin : gen_v14_trace
+			assign v14_pe_product_trace[(v14_index * 2 * DATA_WIDTH) +: (2 * DATA_WIDTH)] =
+				v14_products[v14_index];
+		end
+	endgenerate
+	pe_chain_v15 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_EL(NUM_EL)
+	) pe_chain_v15_dut (
+		.a(v15_data), .b(v15_weights), .products(v15_products)
+	);
+	generate
+		for (genvar v15_index = 0; v15_index < NUM_EL; v15_index++) begin : gen_v15_outputs
+			assign v15_product_vector[(v15_index * 2 * DATA_WIDTH) +: (2 * DATA_WIDTH)] =
+				v15_products[v15_index];
+		end
+	endgenerate
 	dot_product_chain_vspecial #(
 		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE), .NUM_UNITS(NUM_DOT_UNITS),
 		.ACC_WIDTH(SPECIAL_ACC_WIDTH), .RESULT_WIDTH(SPECIAL_RESULT_WIDTH),
