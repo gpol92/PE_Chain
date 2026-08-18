@@ -127,7 +127,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overlap",
         action="store_true",
-        help="Attempt a second V12 calculation while the system is busy",
+        help="Attempt a second V12 or VSpecial calculation while busy",
     )
     parser.add_argument(
         "--numPE",
@@ -159,8 +159,8 @@ def parse_config() -> TestConfig:
         args.pechain and args.arrays
     ):
         parser.error(f"--{args.version} requires --pechain --arrays")
-    if args.overlap and args.version != "v12":
-        parser.error("--overlap requires --v12")
+    if args.overlap and args.version not in ("v12", "vspecial"):
+        parser.error("--overlap requires --v12 or --vspecial")
     if args.num_pe < 1:
         parser.error("--numPE must be at least 1")
     if args.num_pe != 4 and args.version not in ARRAY_PIPELINE_VERSIONS:

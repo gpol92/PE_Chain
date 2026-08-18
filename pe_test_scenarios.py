@@ -769,6 +769,40 @@ async def run_vspecial(dut, config: TestConfig) -> None:
     dut.special_data_vectors.value = 0
     dut.special_weight_vectors.value = 0
     dut.special_biases.value = 0
+
+    if config.overlap:
+        overlap_data = tuple(
+            _vector(30 + unit_index, config.num_pe)
+            for unit_index in range(config.num_dots)
+        )
+        overlap_weights = tuple(
+            _vector(-20 - unit_index, config.num_pe)
+            for unit_index in range(config.num_dots)
+        )
+        overlap_biases = tuple(
+            100 + unit_index for unit_index in range(config.num_dots)
+        )
+        dut.special_data_vectors.value = _pack_unit_vectors(overlap_data, data_width)
+        dut.special_weight_vectors.value = _pack_unit_vectors(overlap_weights, data_width)
+        dut.special_biases.value = sum(
+            (bias & bias_mask) << (index * acc_width)
+            for index, bias in enumerate(overlap_biases)
+        )
+        dut.special_valid_in.value = 1
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        assert dut.busy_vspecial.value == 1, (
+            "VSpecial was not busy during the overlap attempt"
+        )
+        assert dut.done_vspecial.value == 0, (
+            "VSpecial completed during the overlap attempt"
+        )
+        await FallingEdge(dut.clk)
+        dut.special_valid_in.value = 0
+        dut.special_data_vectors.value = 0
+        dut.special_weight_vectors.value = 0
+        dut.special_biases.value = 0
+
     for _ in range(config.num_dots * (config.num_pe + 1) + 4):
         await RisingEdge(dut.clk)
         await ReadOnly()
@@ -788,11 +822,84 @@ async def run_vspecial(dut, config: TestConfig) -> None:
             f"VSpecial result RAM address {address}", dut.result_vspecial, expected
         )
 
+    # Present the next request while done is still asserted. It must be accepted
+    # on the immediately following edge, without an idle cycle between requests.
+    back_to_back_data = tuple(
+        _vector(-12 - unit_index, config.num_pe)
+        for unit_index in range(config.num_dots)
+    )
+    back_to_back_weights = tuple(
+        _vector(6 + unit_index, config.num_pe)
+        for unit_index in range(config.num_dots)
+    )
+    back_to_back_biases = tuple(
+        -30 + unit_index for unit_index in range(config.num_dots)
+    )
+    back_to_back_expected = [
+        dot_product(data, weights, data_width) + bias
+        for data, weights, bias in zip(
+            back_to_back_data, back_to_back_weights, back_to_back_biases
+        )
+    ]
+    dut.special_data_vectors.value = _pack_unit_vectors(
+        back_to_back_data, data_width
+    )
+    dut.special_weight_vectors.value = _pack_unit_vectors(
+        back_to_back_weights, data_width
+    )
+    dut.special_biases.value = sum(
+        (bias & bias_mask) << (index * acc_width)
+        for index, bias in enumerate(back_to_back_biases)
+    )
+    dut.special_valid_in.value = 1
+    await RisingEdge(dut.clk)
+    await ReadOnly()
+    assert dut.busy_vspecial.value == 1, (
+        "VSpecial did not accept a request immediately after completion"
+    )
+    assert dut.done_vspecial.value == 0, (
+        "VSpecial done was not cleared by the back-to-back request"
+    )
+
     await FallingEdge(dut.clk)
+    dut.special_valid_in.value = 0
+    dut.special_data_vectors.value = 0
+    dut.special_weight_vectors.value = 0
+    dut.special_biases.value = 0
+
+    for _ in range(config.num_dots * (config.num_pe + 1) + 4):
+        await RisingEdge(dut.clk)
+        await ReadOnly()
+        if dut.done_vspecial.value == 1:
+            break
+        assert dut.busy_vspecial.value == 1, (
+            "VSpecial dropped busy during the back-to-back request"
+        )
+        await FallingEdge(dut.clk)
+    else:
+        assert False, "VSpecial timed out on the back-to-back request"
+
+    assert dut.busy_vspecial.value == 0, (
+        "VSpecial remained busy after the back-to-back request"
+    )
+    await FallingEdge(dut.clk)
+    for address, expected in enumerate(back_to_back_expected):
+        dut.special_result_addr.value = address
+        await Timer(1, unit="ps")
+        assert_signal_equals(
+            f"VSpecial back-to-back result RAM address {address}",
+            dut.result_vspecial,
+            expected,
+        )
+
     await RisingEdge(dut.clk)
     await ReadOnly()
     assert dut.done_vspecial.value == 0, "VSpecial done was not a one-cycle pulse"
-    print(f"[OK] VSpecial stored biased dot products {expected_results}")
+    scenario = "with overlap attempt" if config.overlap else "without overlap"
+    print(
+        f"[OK] VSpecial stored biased dot products {scenario}; "
+        f"back-to-back results {back_to_back_expected}"
+    )
 
 
 async def run_combinational(dut, config: TestConfig) -> None:
