@@ -92,6 +92,82 @@ module pe_chain_v15 #(
 endmodule
 
 
+// V16 adds one feature to V15: completed result vectors are persisted in RAM.
+// V15 remains the compute engine. Its valid pulse enables the RAM write on the
+// following edge, when the registered result vector is stable. valid_out marks
+// that storage edge, and consecutive results use consecutive RAM addresses.
+module pe_chain_v16 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 4,
+	parameter int NUM_EL = 4,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_EL),
+	parameter int RESULT_ADDR_WIDTH = 2,
+	parameter int RESULT_VECTOR_WIDTH = NUM_PE * ACC_WIDTH
+)(
+	input logic clk,
+	input logic rst,
+	input logic valid_in,
+	input logic signed [DATA_WIDTH-1:0] a [0:NUM_PE-1],
+	input logic signed [DATA_WIDTH-1:0] b [0:NUM_PE-1],
+	input logic signed [ACC_WIDTH-1:0] acc_in [0:NUM_PE-1],
+	input logic [RESULT_ADDR_WIDTH-1:0] result_read_addr,
+	output logic signed [ACC_WIDTH-1:0] results [0:NUM_PE-1],
+	output logic [RESULT_VECTOR_WIDTH-1:0] result_read_data,
+	output logic valid_out
+);
+	logic compute_valid;
+	logic [RESULT_ADDR_WIDTH-1:0] result_write_addr;
+	logic [RESULT_VECTOR_WIDTH-1:0] result_vector;
+
+	pe_chain_v15 #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.NUM_PE(NUM_PE),
+		.NUM_EL(NUM_EL),
+		.ACC_WIDTH(ACC_WIDTH)
+	) compute_engine (
+		.clk(clk),
+		.rst(rst),
+		.valid_in(valid_in),
+		.a(a),
+		.b(b),
+		.acc_in(acc_in),
+		.results(results),
+		.valid_out(compute_valid)
+	);
+
+	genvar pe_index;
+	generate
+		for (pe_index = 0; pe_index < NUM_PE; pe_index++) begin : gen_result_vector
+			assign result_vector[(pe_index * ACC_WIDTH) +: ACC_WIDTH] =
+				results[pe_index];
+		end
+	endgenerate
+
+	simple_ram #(
+		.DATA_WIDTH(RESULT_VECTOR_WIDTH),
+		.ADDR_WIDTH(RESULT_ADDR_WIDTH)
+	) result_ram (
+		.clk(clk),
+		.we(compute_valid),
+		.write_addr(result_write_addr),
+		.write_data(result_vector),
+		.read_addr(result_read_addr),
+		.read_data(result_read_data)
+	);
+
+	always_ff @(posedge clk) begin
+		if (rst) begin
+			result_write_addr <= '0;
+			valid_out <= 1'b0;
+		end else begin
+			valid_out <= compute_valid;
+			if (compute_valid)
+				result_write_addr <= result_write_addr + 1'b1;
+		end
+	end
+endmodule
+
+
 module pe_chain_arrays #(
 	parameter int DATA_WIDTH = 8,
 	parameter int NUM_PE = 2

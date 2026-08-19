@@ -68,6 +68,7 @@ async def run_product_test(dut, config: TestConfig) -> None:
         "v13": run_v13_system,
         "v14": run_v14_parallel,
         "v15": run_v15_element_array,
+        "v16": run_v16_result_memory,
         "vspecial": run_vspecial,
     }.get(config.version, run_combinational)
     await scenario(dut, config)
@@ -86,6 +87,7 @@ async def run_v6_pipeline(dut, config: TestConfig) -> None:
     await _reset_dut(dut)
     assert dut.y_pe_chain_v6.value.to_signed() == 0, "V6 output was not cleared by reset"
 
+    await FallingEdge(dut.clk)
     dut.rst.value = 0
     transactions = [
         (_vector(2, config.num_pe), _vector(3, config.num_pe)),
@@ -451,6 +453,123 @@ async def run_v15_element_array(dut, config: TestConfig) -> None:
     dut.v15_valid_in.value = 0
     await _tick(dut)
     assert dut.valid_out_pe_chain_v15.value == 0, "V15 valid_out did not clear"
+
+
+async def run_v16_result_memory(dut, config: TestConfig) -> None:
+    """Check that V16 persists each result vector produced by its V15 core."""
+    data_width = len(dut.a)
+    result_width = len(dut.v16_result_vector) // config.num_pe
+    batch_count = 3 if config.stream else 1
+    batches = []
+
+    for _ in range(batch_count):
+        operand_streams = _v15_operand_streams(config.num_pe, config.num_el)
+        initial_accumulators = tuple(randint(-10, 10) for _ in range(config.num_pe))
+        final_results = [
+            initial_accumulators[pe_index]
+            + sum(
+                signed_truncate(value, data_width)
+                * signed_truncate(weight, data_width)
+                for value, weight in operand_streams[pe_index]
+            )
+            for pe_index in range(config.num_pe)
+        ]
+        batches.append((operand_streams, initial_accumulators, final_results))
+
+    await _reset_dut(
+        dut,
+        inputs=(
+            "v16_valid_in", "v16_data_vector", "v16_weight_vector",
+            "v16_acc_vector", "v16_result_addr",
+        ),
+    )
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+
+    for batch_index, (operand_streams, initial_accumulators, final_results) in enumerate(batches):
+        running_results = list(initial_accumulators)
+        for element_index in range(config.num_el):
+            await FallingEdge(dut.clk)
+            operands = tuple(stream[element_index] for stream in operand_streams)
+            data = tuple(value for value, _ in operands)
+            weights = tuple(weight for _, weight in operands)
+            if element_index == 0:
+                dut.v16_acc_vector.value = pack_vector(
+                    initial_accumulators, result_width
+                )
+            dut.v16_data_vector.value = pack_vector(data, data_width)
+            dut.v16_weight_vector.value = pack_vector(weights, data_width)
+            dut.v16_valid_in.value = 1
+
+            stores_previous_batch = batch_index > 0 and element_index == 0
+            if stores_previous_batch:
+                dut.v16_result_addr.value = batch_index - 1
+
+            await _tick(dut)
+            assert bool(dut.valid_out_pe_chain_v16.value) == stores_previous_batch, (
+                f"V16 storage valid mismatch at batch {batch_index}, "
+                f"element {element_index}"
+            )
+
+            for pe_index, (raw_value, raw_weight) in enumerate(operands):
+                running_results[pe_index] += (
+                    signed_truncate(raw_value, data_width)
+                    * signed_truncate(raw_weight, data_width)
+                )
+            packed_results = int(dut.v16_result_vector.value)
+            for pe_index, expected in enumerate(running_results):
+                actual = signed_truncate(
+                    packed_results >> (pe_index * result_width), result_width
+                )
+                assert actual == expected, (
+                    f"V16 PE{pe_index} batch {batch_index}, element "
+                    f"{element_index} mismatch: got {actual}, expected {expected}"
+                )
+
+            if stores_previous_batch:
+                expected_stored = pack_vector(
+                    batches[batch_index - 1][2], result_width
+                )
+                assert int(dut.v16_ram_result_vector.value) == expected_stored, (
+                    f"V16 RAM batch {batch_index - 1} was not stored when valid_out rose"
+                )
+
+        assert running_results == final_results
+
+    # The final V15 completion is written on the following edge. Deasserting
+    # valid_in here also proves that storage does not start another calculation.
+    await FallingEdge(dut.clk)
+    dut.v16_valid_in.value = 0
+    dut.v16_result_addr.value = batch_count - 1
+    await _tick(dut)
+    assert dut.valid_out_pe_chain_v16.value == 1, (
+        "V16 did not mark the final result-RAM write"
+    )
+    expected_final = pack_vector(batches[-1][2], result_width)
+    assert int(dut.v16_ram_result_vector.value) == expected_final, (
+        "V16 final result vector was not stored"
+    )
+
+    await FallingEdge(dut.clk)
+    await _tick(dut)
+    assert dut.valid_out_pe_chain_v16.value == 0, "V16 valid_out did not clear"
+
+    # The RAM has an asynchronous read port, so every prior address can be
+    # revisited without advancing the compute engine.
+    await FallingEdge(dut.clk)
+    for batch_index, (_, _, final_results) in enumerate(batches):
+        dut.v16_result_addr.value = batch_index
+        await Timer(1, unit="ps")
+        expected_stored = pack_vector(final_results, result_width)
+        actual_stored = int(dut.v16_ram_result_vector.value)
+        assert actual_stored == expected_stored, (
+            f"V16 retained RAM batch {batch_index} mismatch: got "
+            f"0x{actual_stored:x}, expected 0x{expected_stored:x}"
+        )
+
+    print(
+        f"[OK] V16 stored {batch_count} result vector(s) produced by its V15 core"
+    )
 
 
 def _v15_operand_streams(num_pe: int, num_el: int):

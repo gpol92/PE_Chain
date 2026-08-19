@@ -7,8 +7,8 @@ import os
 from dataclasses import dataclass
 
 
-PE_VERSIONS = (*tuple(f"v{version}" for version in range(16)), "vspecial")
-ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 16)), "vspecial")
+PE_VERSIONS = (*tuple(f"v{version}" for version in range(17)), "vspecial")
+ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 17)), "vspecial")
 FLAG_FIELDS = (
     "passed", "positive", "zero", "pechain", "arrays", "calculus", "overlap",
     "overflow", "stream",
@@ -150,7 +150,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Run several back-to-back V15 vector batches",
+        help="Run several back-to-back V15 or V16 vector batches",
     )
     parser.add_argument(
         "--numPE",
@@ -159,7 +159,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         metavar="COUNT",
-        help="Set the number of processing elements for V5-V15 and VSpecial (default: 4)",
+        help="Set the number of processing elements for V5-V16 and VSpecial (default: 4)",
     )
     parser.add_argument(
         "--num-el",
@@ -167,7 +167,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         metavar="COUNT",
-        help="Set the number of elements in each V15 PE vector (default: 4)",
+        help="Set the number of elements in each V15/V16 PE vector (default: 4)",
     )
     parser.add_argument(
         "--num-dots",
@@ -194,20 +194,20 @@ def parse_config() -> TestConfig:
         parser.error("--overlap requires --v12, --v13, or --vspecial")
     if args.overflow and args.version not in ("v7", "v13", "v14"):
         parser.error("--overflow requires --v7, --v13, or --v14")
-    if args.stream and args.version != "v15":
-        parser.error("--stream requires --v15")
+    if args.stream and args.version not in ("v15", "v16"):
+        parser.error("--stream requires --v15 or --v16")
     if args.overflow and args.num_pe < 3:
         parser.error("--overflow requires at least 3 processing elements")
     if args.num_pe < 1:
         parser.error("--numPE must be at least 1")
     if args.num_pe != 4 and args.version not in (
-        *tuple(f"v{version}" for version in range(5, 16)), "vspecial"
+        *tuple(f"v{version}" for version in range(5, 17)), "vspecial"
     ):
-        parser.error("--numPE is configurable only for V5-V15 and VSpecial")
+        parser.error("--numPE is configurable only for V5-V16 and VSpecial")
     if args.num_el < 1:
         parser.error("--num-el must be at least 1")
-    if args.num_el != 4 and args.version != "v15":
-        parser.error("--num-el is configurable only for V15")
+    if args.num_el != 4 and args.version not in ("v15", "v16"):
+        parser.error("--num-el is configurable only for V15 or V16")
     if args.num_dots < 1:
         parser.error("--num-dots must be at least 1")
     if args.num_dots != 3 and args.version not in ("v13", "vspecial"):

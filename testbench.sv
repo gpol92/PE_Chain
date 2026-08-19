@@ -50,6 +50,7 @@ module pe_testbench #(
 	parameter int V7_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int V14_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int V15_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_EL),
+	parameter int V16_RESULT_ADDR_WIDTH = 2,
 	parameter int SPECIAL_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int SPECIAL_RESULT_WIDTH = SPECIAL_ACC_WIDTH + 1,
 	parameter int SPECIAL_ADDR_WIDTH = (NUM_DOT_UNITS <= 1) ? 1 : $clog2(NUM_DOT_UNITS)
@@ -84,6 +85,11 @@ module pe_testbench #(
 	input logic [(NUM_PE*DATA_WIDTH)-1:0] v15_data_vector,
 	input logic [(NUM_PE*DATA_WIDTH)-1:0] v15_weight_vector,
 	input logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v15_acc_vector,
+	input logic v16_valid_in,
+	input logic [(NUM_PE*DATA_WIDTH)-1:0] v16_data_vector,
+	input logic [(NUM_PE*DATA_WIDTH)-1:0] v16_weight_vector,
+	input logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v16_acc_vector,
+	input logic [V16_RESULT_ADDR_WIDTH-1:0] v16_result_addr,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v0,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v1,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe,
@@ -131,6 +137,9 @@ module pe_testbench #(
 	output logic [(NUM_PE*2*DATA_WIDTH)-1:0] v14_pe_product_trace,
 	output logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v15_result_vector,
 	output logic valid_out_pe_chain_v15,
+	output logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v16_result_vector,
+	output logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v16_ram_result_vector,
+	output logic valid_out_pe_chain_v16,
 	output logic signed [SPECIAL_RESULT_WIDTH-1:0] result_vspecial,
 	output logic busy_vspecial,
 	output logic done_vspecial
@@ -148,6 +157,10 @@ module pe_testbench #(
 	logic signed [DATA_WIDTH-1:0] v15_weights [0:NUM_PE-1];
 	logic signed [V15_ACC_WIDTH-1:0] v15_acc [0:NUM_PE-1];
 	logic signed [V15_ACC_WIDTH-1:0] v15_results [0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] v16_data [0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] v16_weights [0:NUM_PE-1];
+	logic signed [V15_ACC_WIDTH-1:0] v16_acc [0:NUM_PE-1];
+	logic signed [V15_ACC_WIDTH-1:0] v16_results [0:NUM_PE-1];
 
 	pe_v0 #(.DATA_WIDTH(DATA_WIDTH)) v0_dut (.a(a), .b(b), .y(y_v0));
 	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) v1_dut (.a(a), .b(b), .acc_in(acc_in), .y(y_v1));
@@ -178,6 +191,11 @@ module pe_testbench #(
 			assign v15_data[i] = v15_data_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
 			assign v15_weights[i] = v15_weight_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
 			assign v15_acc[i] = v15_acc_vector[(i * V15_ACC_WIDTH) +: V15_ACC_WIDTH];
+		end
+		for (i = 0; i < NUM_PE; i++) begin : gen_v16_inputs
+			assign v16_data[i] = v16_data_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
+			assign v16_weights[i] = v16_weight_vector[(i * DATA_WIDTH) +: DATA_WIDTH];
+			assign v16_acc[i] = v16_acc_vector[(i * V15_ACC_WIDTH) +: V15_ACC_WIDTH];
 		end
 		for (i = 0; i < NUM_DOT_UNITS; i++) begin : gen_special_units
 			assign special_bias[i] = special_biases[(i * SPECIAL_ACC_WIDTH) +: SPECIAL_ACC_WIDTH];
@@ -295,12 +313,29 @@ module pe_testbench #(
 	) pe_chain_v15_dut (
 		.clk(clk), .rst(rst), .valid_in(v15_valid_in),
 		.a(v15_data), .b(v15_weights), .acc_in(v15_acc),
-		.results(v15_results), .valid_out(valid_out_pe_chain_v15)
+		.results(v15_results),
+		.valid_out(valid_out_pe_chain_v15)
 	);
 	generate
 		for (genvar v15_index = 0; v15_index < NUM_PE; v15_index++) begin : gen_v15_outputs
 			assign v15_result_vector[(v15_index * V15_ACC_WIDTH) +: V15_ACC_WIDTH] =
 				v15_results[v15_index];
+		end
+	endgenerate
+	pe_chain_v16 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE), .NUM_EL(NUM_EL),
+		.ACC_WIDTH(V15_ACC_WIDTH), .RESULT_ADDR_WIDTH(V16_RESULT_ADDR_WIDTH)
+	) pe_chain_v16_dut (
+		.clk(clk), .rst(rst), .valid_in(v16_valid_in),
+		.a(v16_data), .b(v16_weights), .acc_in(v16_acc),
+		.result_read_addr(v16_result_addr), .results(v16_results),
+		.result_read_data(v16_ram_result_vector),
+		.valid_out(valid_out_pe_chain_v16)
+	);
+	generate
+		for (genvar v16_index = 0; v16_index < NUM_PE; v16_index++) begin : gen_v16_outputs
+			assign v16_result_vector[(v16_index * V15_ACC_WIDTH) +: V15_ACC_WIDTH] =
+				v16_results[v16_index];
 		end
 	endgenerate
 	dot_product_chain_vspecial #(
