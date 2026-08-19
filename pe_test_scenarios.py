@@ -457,6 +457,10 @@ async def run_v15_element_array(dut, config: TestConfig) -> None:
 
 async def run_v16_result_memory(dut, config: TestConfig) -> None:
     """Check that V16 persists each result vector produced by its V15 core."""
+    if config.overflow:
+        await _run_v16_overflow_memory(dut, config)
+        return
+
     data_width = len(dut.a)
     result_width = len(dut.v16_result_vector) // config.num_pe
     batch_count = 3 if config.stream else 1
@@ -485,6 +489,12 @@ async def run_v16_result_memory(dut, config: TestConfig) -> None:
     )
     await FallingEdge(dut.clk)
     dut.rst.value = 0
+    assert dut.error_out_pe_chain_v16.value == 0, (
+        "V16 error_out was not cleared by reset"
+    )
+    assert int(dut.overflow_out_pe_chain_v16.value) == 0, (
+        "V16 overflow map was not cleared by reset"
+    )
 
     for batch_index, (operand_streams, initial_accumulators, final_results) in enumerate(batches):
         running_results = list(initial_accumulators)
@@ -509,6 +519,12 @@ async def run_v16_result_memory(dut, config: TestConfig) -> None:
             assert bool(dut.valid_out_pe_chain_v16.value) == stores_previous_batch, (
                 f"V16 storage valid mismatch at batch {batch_index}, "
                 f"element {element_index}"
+            )
+            assert dut.error_out_pe_chain_v16.value == 0, (
+                "V16 reported an unexpected overflow"
+            )
+            assert int(dut.overflow_out_pe_chain_v16.value) == 0, (
+                "V16 reported unexpected per-PE overflow bits"
             )
 
             for pe_index, (raw_value, raw_weight) in enumerate(operands):
@@ -545,6 +561,12 @@ async def run_v16_result_memory(dut, config: TestConfig) -> None:
     assert dut.valid_out_pe_chain_v16.value == 1, (
         "V16 did not mark the final result-RAM write"
     )
+    assert dut.error_out_pe_chain_v16.value == 0, (
+        "V16 reported an unexpected final-batch overflow"
+    )
+    assert int(dut.overflow_out_pe_chain_v16.value) == 0, (
+        "V16 reported unexpected final-batch overflow bits"
+    )
     expected_final = pack_vector(batches[-1][2], result_width)
     assert int(dut.v16_ram_result_vector.value) == expected_final, (
         "V16 final result vector was not stored"
@@ -569,6 +591,141 @@ async def run_v16_result_memory(dut, config: TestConfig) -> None:
 
     print(
         f"[OK] V16 stored {batch_count} result vector(s) produced by its V15 core"
+    )
+
+
+async def _run_v16_overflow_memory(dut, config: TestConfig) -> None:
+    """Check V16's per-PE overflow map, sanitized RAM write, and recovery."""
+    data_width = len(dut.a)
+    result_width = len(dut.v16_result_vector) // config.num_pe
+    max_accumulator = (1 << (result_width - 1)) - 1
+    min_accumulator = -(1 << (result_width - 1))
+    overflow_lane_count = min(config.num_pe, 2)
+    expected_overflow_map = (1 << overflow_lane_count) - 1
+
+    initial_accumulators = tuple(
+        max_accumulator if pe_index == 0
+        else min_accumulator if pe_index == 1
+        else 0
+        for pe_index in range(config.num_pe)
+    )
+    data = tuple(
+        1 if pe_index == 0 else -1 if pe_index == 1 else pe_index + 1
+        for pe_index in range(config.num_pe)
+    )
+    weights = (1,) * config.num_pe
+    expected_stored_results = tuple(
+        0 if pe_index < overflow_lane_count else data[pe_index] * config.num_el
+        for pe_index in range(config.num_pe)
+    )
+
+    await _reset_dut(
+        dut,
+        inputs=(
+            "v16_valid_in", "v16_data_vector", "v16_weight_vector",
+            "v16_acc_vector", "v16_result_addr",
+        ),
+    )
+    assert dut.valid_out_pe_chain_v16.value == 0, (
+        "V16 valid_out was not cleared by reset"
+    )
+    assert dut.error_out_pe_chain_v16.value == 0, (
+        "V16 error_out was not cleared by reset"
+    )
+    assert int(dut.overflow_out_pe_chain_v16.value) == 0, (
+        "V16 overflow map was not cleared by reset"
+    )
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    dut.v16_acc_vector.value = pack_vector(initial_accumulators, result_width)
+    dut.v16_data_vector.value = pack_vector(data, data_width)
+    dut.v16_weight_vector.value = pack_vector(weights, data_width)
+    dut.v16_valid_in.value = 1
+
+    for element_index in range(config.num_el):
+        await _tick(dut)
+        assert dut.valid_out_pe_chain_v16.value == 0, (
+            f"V16 stored the overflow batch too early at element {element_index}"
+        )
+        assert dut.error_out_pe_chain_v16.value == 0, (
+            f"V16 reported the overflow before its RAM write at element {element_index}"
+        )
+        await FallingEdge(dut.clk)
+
+    dut.v16_valid_in.value = 0
+    dut.v16_result_addr.value = 0
+    await _tick(dut)
+    assert dut.valid_out_pe_chain_v16.value == 1, (
+        "V16 did not mark the overflowing result-RAM write"
+    )
+    assert dut.error_out_pe_chain_v16.value == 1, (
+        "V16 did not report accumulator overflow"
+    )
+    actual_overflow_map = int(dut.overflow_out_pe_chain_v16.value)
+    assert actual_overflow_map == expected_overflow_map, (
+        f"V16 overflow map was 0b{actual_overflow_map:0{config.num_pe}b}, "
+        f"expected 0b{expected_overflow_map:0{config.num_pe}b}"
+    )
+    expected_stored = pack_vector(expected_stored_results, result_width)
+    assert int(dut.v16_ram_result_vector.value) == expected_stored, (
+        "V16 did not zero the overflowing PE while retaining safe PE results"
+    )
+
+    await FallingEdge(dut.clk)
+    await _tick(dut)
+    assert dut.valid_out_pe_chain_v16.value == 0, "V16 valid_out did not clear"
+    assert dut.error_out_pe_chain_v16.value == 0, "V16 error_out did not clear"
+    assert int(dut.overflow_out_pe_chain_v16.value) == 0, (
+        "V16 overflow map did not clear"
+    )
+
+    # A safe batch must recover immediately and use the next RAM address.
+    await FallingEdge(dut.clk)
+    safe_accumulators = (5,) * config.num_pe
+    safe_data = (2,) * config.num_pe
+    safe_weights = (3,) * config.num_pe
+    expected_safe_results = tuple(
+        accumulator + (2 * 3 * config.num_el)
+        for accumulator in safe_accumulators
+    )
+    dut.v16_acc_vector.value = pack_vector(safe_accumulators, result_width)
+    dut.v16_data_vector.value = pack_vector(safe_data, data_width)
+    dut.v16_weight_vector.value = pack_vector(safe_weights, data_width)
+    dut.v16_valid_in.value = 1
+    for element_index in range(config.num_el):
+        await _tick(dut)
+        assert dut.error_out_pe_chain_v16.value == 0, (
+            f"V16 retained overflow into recovery element {element_index}"
+        )
+        await FallingEdge(dut.clk)
+
+    dut.v16_valid_in.value = 0
+    dut.v16_result_addr.value = 1
+    await _tick(dut)
+    assert dut.valid_out_pe_chain_v16.value == 1, (
+        "V16 did not store the recovery batch"
+    )
+    assert dut.error_out_pe_chain_v16.value == 0, (
+        "V16 reported overflow for the recovery batch"
+    )
+    assert int(dut.overflow_out_pe_chain_v16.value) == 0, (
+        "V16 retained overflow bits for the recovery batch"
+    )
+    expected_safe = pack_vector(expected_safe_results, result_width)
+    assert int(dut.v16_ram_result_vector.value) == expected_safe, (
+        "V16 recovery batch was not stored at the next RAM address"
+    )
+
+    await FallingEdge(dut.clk)
+    dut.v16_result_addr.value = 0
+    await Timer(1, unit="ps")
+    assert int(dut.v16_ram_result_vector.value) == expected_stored, (
+        "V16 overflow result was not retained at RAM address zero"
+    )
+    print(
+        f"[OK] V16 stored overflow map 0b{actual_overflow_map:0{config.num_pe}b} "
+        "and recovered at the next RAM address"
     )
 
 

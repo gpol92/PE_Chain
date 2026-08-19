@@ -140,6 +140,8 @@ module pe_testbench #(
 	output logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v16_result_vector,
 	output logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v16_ram_result_vector,
 	output logic valid_out_pe_chain_v16,
+	output logic error_out_pe_chain_v16,
+	output logic [NUM_PE-1:0] overflow_out_pe_chain_v16,
 	output logic signed [SPECIAL_RESULT_WIDTH-1:0] result_vspecial,
 	output logic busy_vspecial,
 	output logic done_vspecial
@@ -330,7 +332,9 @@ module pe_testbench #(
 		.a(v16_data), .b(v16_weights), .acc_in(v16_acc),
 		.result_read_addr(v16_result_addr), .results(v16_results),
 		.result_read_data(v16_ram_result_vector),
-		.valid_out(valid_out_pe_chain_v16)
+		.valid_out(valid_out_pe_chain_v16),
+		.error_out(error_out_pe_chain_v16),
+		.overflow_out(overflow_out_pe_chain_v16)
 	);
 	generate
 		for (genvar v16_index = 0; v16_index < NUM_PE; v16_index++) begin : gen_v16_outputs

@@ -145,7 +145,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overflow",
         action="store_true",
-        help="Run the V7, V13, or V14 overflow testcase",
+        help="Run the V7, V13, V14, or V16 overflow testcase",
     )
     parser.add_argument(
         "--stream",
@@ -192,12 +192,12 @@ def parse_config() -> TestConfig:
         parser.error(f"--{args.version} requires --pechain --arrays")
     if args.overlap and args.version not in ("v12", "v13", "vspecial"):
         parser.error("--overlap requires --v12, --v13, or --vspecial")
-    if args.overflow and args.version not in ("v7", "v13", "v14"):
-        parser.error("--overflow requires --v7, --v13, or --v14")
+    if args.overflow and args.version not in ("v7", "v13", "v14", "v16"):
+        parser.error("--overflow requires --v7, --v13, --v14, or --v16")
     if args.stream and args.version not in ("v15", "v16"):
         parser.error("--stream requires --v15 or --v16")
-    if args.overflow and args.num_pe < 3:
-        parser.error("--overflow requires at least 3 processing elements")
+    if args.overflow and args.version in ("v7", "v13", "v14") and args.num_pe < 3:
+        parser.error("V7, V13, and V14 overflow tests require at least 3 processing elements")
     if args.num_pe < 1:
         parser.error("--numPE must be at least 1")
     if args.num_pe != 4 and args.version not in (

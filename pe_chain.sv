@@ -92,10 +92,11 @@ module pe_chain_v15 #(
 endmodule
 
 
-// V16 adds one feature to V15: completed result vectors are persisted in RAM.
-// V15 remains the compute engine. Its valid pulse enables the RAM write on the
-// following edge, when the registered result vector is stable. valid_out marks
-// that storage edge, and consecutive results use consecutive RAM addresses.
+// V16 adds result RAM and per-PE overflow reporting to the V15 compute engine.
+// The V15 valid pulse enables a RAM write on the following edge, when the
+// registered result vector and its overflow map are stable. valid_out marks
+// every storage edge; error_out distinguishes writes containing overflowed
+// lanes, which are stored as zero without discarding the other lane results.
 module pe_chain_v16 #(
 	parameter int DATA_WIDTH = 8,
 	parameter int NUM_PE = 4,
@@ -113,11 +114,20 @@ module pe_chain_v16 #(
 	input logic [RESULT_ADDR_WIDTH-1:0] result_read_addr,
 	output logic signed [ACC_WIDTH-1:0] results [0:NUM_PE-1],
 	output logic [RESULT_VECTOR_WIDTH-1:0] result_read_data,
-	output logic valid_out
+	output logic valid_out,
+	output logic error_out,
+	output logic [NUM_PE-1:0] overflow_out
 );
+	localparam int ELEMENT_COUNT_WIDTH = (NUM_EL <= 1) ? 1 : $clog2(NUM_EL);
 	logic compute_valid;
+	logic signed [ACC_WIDTH-1:0] compute_results [0:NUM_PE-1];
+	logic [ELEMENT_COUNT_WIDTH-1:0] overflow_element_count;
+	logic [NUM_PE-1:0] local_overflow;
+	logic [NUM_PE-1:0] active_overflow;
+	logic [NUM_PE-1:0] completed_overflow;
 	logic [RESULT_ADDR_WIDTH-1:0] result_write_addr;
-	logic [RESULT_VECTOR_WIDTH-1:0] result_vector;
+	logic [RESULT_VECTOR_WIDTH-1:0] stored_result_vector;
+	wire overflow_first_element = (overflow_element_count == '0);
 
 	pe_chain_v15 #(
 		.DATA_WIDTH(DATA_WIDTH),
@@ -131,15 +141,34 @@ module pe_chain_v16 #(
 		.a(a),
 		.b(b),
 		.acc_in(acc_in),
-		.results(results),
+		.results(compute_results),
 		.valid_out(compute_valid)
 	);
 
 	genvar pe_index;
 	generate
-		for (pe_index = 0; pe_index < NUM_PE; pe_index++) begin : gen_result_vector
-			assign result_vector[(pe_index * ACC_WIDTH) +: ACC_WIDTH] =
-				results[pe_index];
+		for (pe_index = 0; pe_index < NUM_PE; pe_index++) begin : gen_overflow
+			wire signed [(2*DATA_WIDTH)-1:0] product;
+			wire signed [ACC_WIDTH-1:0] accumulator;
+			wire signed [ACC_WIDTH:0] extended_accumulator;
+			wire signed [ACC_WIDTH:0] extended_product;
+			wire signed [ACC_WIDTH:0] extended_sum;
+
+			assign product = a[pe_index] * b[pe_index];
+			assign accumulator = overflow_first_element
+				? acc_in[pe_index] : compute_results[pe_index];
+			assign extended_accumulator = {accumulator[ACC_WIDTH-1], accumulator};
+			assign extended_product = {
+				{(ACC_WIDTH + 1 - (2*DATA_WIDTH)){
+					product[(2*DATA_WIDTH)-1]}}, product
+			};
+			assign extended_sum = extended_accumulator + extended_product;
+			assign local_overflow[pe_index] = valid_in &&
+				(extended_sum[ACC_WIDTH] != extended_sum[ACC_WIDTH-1]);
+
+			assign results[pe_index] = compute_results[pe_index];
+			assign stored_result_vector[(pe_index * ACC_WIDTH) +: ACC_WIDTH] =
+				completed_overflow[pe_index] ? '0 : compute_results[pe_index];
 		end
 	endgenerate
 
@@ -150,19 +179,37 @@ module pe_chain_v16 #(
 		.clk(clk),
 		.we(compute_valid),
 		.write_addr(result_write_addr),
-		.write_data(result_vector),
+		.write_data(stored_result_vector),
 		.read_addr(result_read_addr),
 		.read_data(result_read_data)
 	);
 
 	always_ff @(posedge clk) begin
 		if (rst) begin
+			overflow_element_count <= '0;
+			active_overflow <= '0;
+			completed_overflow <= '0;
 			result_write_addr <= '0;
 			valid_out <= 1'b0;
+			error_out <= 1'b0;
+			overflow_out <= '0;
 		end else begin
 			valid_out <= compute_valid;
+			error_out <= compute_valid && (|completed_overflow);
+			overflow_out <= compute_valid ? completed_overflow : '0;
 			if (compute_valid)
 				result_write_addr <= result_write_addr + 1'b1;
+
+			if (valid_in) begin
+				if (overflow_element_count == NUM_EL - 1) begin
+					overflow_element_count <= '0;
+					completed_overflow <= active_overflow | local_overflow;
+					active_overflow <= '0;
+				end else begin
+					overflow_element_count <= overflow_element_count + 1'b1;
+					active_overflow <= active_overflow | local_overflow;
+				end
+			end
 		end
 	end
 endmodule

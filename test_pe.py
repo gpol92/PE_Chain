@@ -33,6 +33,7 @@ def run_simulation(config: _TestConfig) -> None:
             "v7": "V7_ACC_WIDTH",
             "v13": "SPECIAL_ACC_WIDTH",
             "v14": "V14_ACC_WIDTH",
+            "v16": "V15_ACC_WIDTH",
         }[config.version]
         parameters[width_parameter] = 2 * 8
 
