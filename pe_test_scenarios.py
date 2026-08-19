@@ -1229,6 +1229,7 @@ async def _run_v12_transaction(
         "V12 overlap error did not retain its expected state"
     )
 
+    start_lowered_at_falling_edge = False
     if config.overlap and address == 0:
         await FallingEdge(dut.clk)
         dut.data_addr.value = 1 - address
@@ -1239,9 +1240,12 @@ async def _run_v12_transaction(
         assert dut.error_v12.value == 1, "V12 did not flag the overlap attempt"
         await FallingEdge(dut.clk)
         dut.start.value = 0
+        start_lowered_at_falling_edge = True
 
     for _ in range(config.num_pe + 3):
-        await FallingEdge(dut.clk)
+        if not start_lowered_at_falling_edge:
+            await FallingEdge(dut.clk)
+        start_lowered_at_falling_edge = False
         await _tick(dut)
         if dut.done_v12.value == 1:
             break

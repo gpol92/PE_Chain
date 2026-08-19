@@ -120,6 +120,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
         dest="version",
         help=argparse.SUPPRESS,
     )
+    versions.add_argument(
+        "--regression",
+        action="store_const",
+        const="regression",
+        dest="version",
+        help="Run the complete supported regression matrix",
+    )
     versions.set_defaults(version="all")
     parser.add_argument(
         "--pechain",
@@ -184,6 +191,21 @@ def parse_config() -> TestConfig:
     parser = build_argument_parser()
     args = parser.parse_args()
 
+    if args.version == "regression" and (
+        not args.passed
+        or not args.positive
+        or args.zero
+        or args.pechain
+        or args.arrays
+        or args.calculus
+        or args.overlap
+        or args.overflow
+        or args.stream
+        or args.num_pe != 4
+        or args.num_el != 4
+        or args.num_dots != 3
+    ):
+        parser.error("--regression cannot be combined with per-test options")
     if args.arrays and not args.pechain:
         parser.error("--arrays requires --pechain")
     if args.version in ARRAY_PIPELINE_VERSIONS and not (
