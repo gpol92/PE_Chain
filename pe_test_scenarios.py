@@ -1,5 +1,7 @@
 """Independent cocotb scenarios for each PE implementation family."""
 
+from random import randint
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
@@ -32,7 +34,7 @@ MEMORY_RESET_OUTPUTS = {
 
 
 def _vector(start: int, length: int) -> tuple[int, ...]:
-    return tuple(start + index for index in range(length))
+    return tuple(randint(start, start + length - 1) for _ in range(length))
 
 
 def _test_vectors(num_pe: int):
@@ -84,7 +86,6 @@ async def run_v6_pipeline(dut, config: TestConfig) -> None:
     await _reset_dut(dut)
     assert dut.y_pe_chain_v6.value.to_signed() == 0, "V6 output was not cleared by reset"
 
-    await FallingEdge(dut.clk)
     dut.rst.value = 0
     transactions = [
         (_vector(2, config.num_pe), _vector(3, config.num_pe)),
@@ -369,37 +370,100 @@ async def _run_v14_overflow_vector(dut, config: TestConfig) -> None:
 
 
 async def run_v15_element_array(dut, config: TestConfig) -> None:
-    """Check one independently visible product for every vector element/PE."""
+    """Check one independent NUM_EL-element dot product in every PE."""
     data_width = len(dut.a)
-    product_width = 2 * data_width
-    data = _vector(2, config.num_el)
-    weights = _vector(-3, config.num_el)
+    result_width = len(dut.v15_result_vector) // config.num_pe
+    batch_count = 3 if config.stream else 1
 
-    dut.v15_data_vector.value = pack_vector(data, data_width)
-    dut.v15_weight_vector.value = pack_vector(weights, data_width)
-    await Timer(1, unit="ns")
+    await _reset_dut(
+        dut,
+        inputs=(
+            "v15_valid_in", "v15_data_vector", "v15_weight_vector",
+            "v15_acc_vector",
+        ),
+    )
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
 
-    packed_products = int(dut.v15_product_vector.value)
-    for element_index, (raw_value, raw_weight) in enumerate(zip(data, weights)):
-        value = signed_truncate(raw_value, data_width)
-        weight = signed_truncate(raw_weight, data_width)
-        expected = value * weight
-        actual = signed_truncate(
-            packed_products >> (element_index * product_width), product_width
-        )
-        assert actual == expected, (
-            f"V15 PE{element_index} product mismatch: got {actual}, expected "
-            f"a[{element_index}] * b[{element_index}] = {value} * {weight} "
-            f"= {expected}"
-        )
+    for batch_index in range(batch_count):
+        operand_streams = _v15_operand_streams(config.num_pe, config.num_el)
+        initial_accumulators = tuple(randint(-10, 10) for _ in range(config.num_pe))
+        expected_results = list(initial_accumulators)
+
+        for element_index in range(config.num_el):
+            await FallingEdge(dut.clk)
+            if element_index == 0:
+                dut.v15_acc_vector.value = pack_vector(
+                    initial_accumulators, result_width
+                )
+            operands = tuple(stream[element_index] for stream in operand_streams)
+            data = tuple(value for value, _ in operands)
+            weights = tuple(weight for _, weight in operands)
+            dut.v15_data_vector.value = pack_vector(data, data_width)
+            dut.v15_weight_vector.value = pack_vector(weights, data_width)
+            dut.v15_valid_in.value = 1
+
+            await _tick(dut)
+            expected_valid = element_index == config.num_el - 1
+            assert bool(dut.valid_out_pe_chain_v15.value) == expected_valid, (
+                f"V15 valid_out mismatch at batch {batch_index}, "
+                f"element {element_index}"
+            )
+
+            packed_results = int(dut.v15_result_vector.value)
+            for pe_index, (raw_value, raw_weight) in enumerate(operands):
+                value = signed_truncate(raw_value, data_width)
+                weight = signed_truncate(raw_weight, data_width)
+                expected_results[pe_index] += value * weight
+                actual = signed_truncate(
+                    packed_results >> (pe_index * result_width), result_width
+                )
+                assert actual == expected_results[pe_index], (
+                    f"V15 PE{pe_index} batch {batch_index}, element "
+                    f"{element_index} mismatch: got {actual}, expected "
+                    f"{expected_results[pe_index]}"
+                )
+
+        packed_results = int(dut.v15_result_vector.value)
+        for pe_index, operand_stream in enumerate(operand_streams):
+            data = tuple(value for value, _ in operand_stream)
+            weights = tuple(weight for _, weight in operand_stream)
+            dot_result = sum(
+                signed_truncate(value, data_width)
+                * signed_truncate(weight, data_width)
+                for value, weight in operand_stream
+            )
+            actual = signed_truncate(
+                packed_results >> (pe_index * result_width), result_width
+            )
+            print(
+                f"[RESULT] V15 batch {batch_index} PE{pe_index}: "
+                f"data={data}, weights={weights}, dot={dot_result}, "
+                f"acc={initial_accumulators[pe_index]}, result={actual}"
+            )
+
         print(
-            f"[OK] pechain_v15 PE{element_index} value equal to expected "
-            f"({actual})"
+            f"[OK] V15 batch {batch_index}: {config.num_pe} PEs independently "
+            f"computed {config.num_el}-element dot products"
         )
 
-    print(
-        f"[OK] V15 mapped {config.num_el} vector elements to "
-        f"{config.num_el} parallel PEs"
+    await FallingEdge(dut.clk)
+    dut.v15_valid_in.value = 0
+    await _tick(dut)
+    assert dut.valid_out_pe_chain_v15.value == 0, "V15 valid_out did not clear"
+
+
+def _v15_operand_streams(num_pe: int, num_el: int):
+    """Create one random NUM_EL-element operand-vector pair for every PE."""
+    return tuple(
+        tuple(
+            (
+                randint(-5, 5),
+                randint(-5, 5),
+            )
+            for _ in range(num_el)
+        )
+        for _ in range(num_pe)
     )
 
 

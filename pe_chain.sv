@@ -31,27 +31,64 @@ module pe_chain #(
 endmodule
 
 
-// Simplified V15 element-wise vector multiplier. NUM_EL sets both the length
-// of the two vectors and the number of parallel PEs. Each PE produces its own
-// result; this version intentionally has no reduction or post-processing.
+// V15 parallel dot-product engine. NUM_PE is the number of independent vector
+// lanes and NUM_EL is the number of elements in each vector. On every valid
+// cycle, PE p consumes one element from vector p. After NUM_EL valid cycles,
+// every PE exposes its completed acc_in + sum(a*b) result simultaneously.
 module pe_chain_v15 #(
 	parameter int DATA_WIDTH = 8,
-	parameter int NUM_EL = 4
+	parameter int NUM_PE = 4,
+	parameter int NUM_EL = 4,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_EL)
 )(
-	input logic signed [DATA_WIDTH-1:0] a [0:NUM_EL-1],
-	input logic signed [DATA_WIDTH-1:0] b [0:NUM_EL-1],
-	output logic signed [(2*DATA_WIDTH)-1:0] products [0:NUM_EL-1]
+	input logic clk,
+	input logic rst,
+	input logic valid_in,
+	input logic signed [DATA_WIDTH-1:0] a [0:NUM_PE-1],
+	input logic signed [DATA_WIDTH-1:0] b [0:NUM_PE-1],
+	input logic signed [ACC_WIDTH-1:0] acc_in [0:NUM_PE-1],
+	output logic signed [ACC_WIDTH-1:0] results [0:NUM_PE-1],
+	output logic valid_out
 );
-	genvar element_index;
+	localparam int ELEMENT_COUNT_WIDTH = (NUM_EL <= 1) ? 1 : $clog2(NUM_EL);
+	logic [ELEMENT_COUNT_WIDTH-1:0] element_count;
+	wire first_element = (element_count == '0);
+
+	genvar pe_index;
 	generate
-		for (element_index = 0; element_index < NUM_EL; element_index++) begin : gen_element_pe
-			pe_v15 #(.DATA_WIDTH(DATA_WIDTH)) pe_dut (
-				.a(a[element_index]),
-				.b(b[element_index]),
-				.product(products[element_index])
+		for (pe_index = 0; pe_index < NUM_PE; pe_index++) begin : gen_vector_pe
+			pe_v15 #(
+				.DATA_WIDTH(DATA_WIDTH),
+				.ACC_WIDTH(ACC_WIDTH)
+			) pe_dut (
+				.clk(clk),
+				.rst(rst),
+				.enable(valid_in),
+				.first_element(first_element),
+				.a(a[pe_index]),
+				.b(b[pe_index]),
+				.acc_in(acc_in[pe_index]),
+				.y(results[pe_index])
 			);
 		end
 	endgenerate
+
+	always_ff @(posedge clk) begin
+		if (rst) begin
+			element_count <= '0;
+			valid_out <= 1'b0;
+		end else begin
+			valid_out <= 1'b0;
+			if (valid_in) begin
+				if (element_count == NUM_EL - 1) begin
+					element_count <= '0;
+					valid_out <= 1'b1;
+				end else begin
+					element_count <= element_count + 1'b1;
+				end
+			end
+		end
+	end
 endmodule
 
 

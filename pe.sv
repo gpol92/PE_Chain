@@ -27,16 +27,30 @@ module pe_v14 #(
 endmodule
 
 
-// V15 PE: one independent lane for element-wise vector multiplication.
+// V15 PE: one independent multiply-accumulate lane. The first valid element
+// of a vector starts from acc_in; following elements continue from y.
 module pe_v15 #(
-	parameter int DATA_WIDTH = 8
+	parameter int DATA_WIDTH = 8,
+	parameter int ACC_WIDTH = 2 * DATA_WIDTH
 )(
+	input logic clk,
+	input logic rst,
+	input logic enable,
+	input logic first_element,
 	input logic signed [DATA_WIDTH-1:0] a,
 	input logic signed [DATA_WIDTH-1:0] b,
-	output logic signed [(2*DATA_WIDTH)-1:0] product
+	input logic signed [ACC_WIDTH-1:0] acc_in,
+	output logic signed [ACC_WIDTH-1:0] y
 );
-	always_comb begin
-		product = a * b;
+	always_ff @(posedge clk) begin
+		if (rst)
+			y <= '0;
+		else if (enable) begin
+			if (first_element)
+				y <= acc_in + (a * b);
+			else
+				y <= y + (a * b);
+		end
 	end
 endmodule
 
