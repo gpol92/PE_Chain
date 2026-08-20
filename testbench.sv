@@ -51,6 +51,8 @@ module pe_testbench #(
 	parameter int V14_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int V15_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_EL),
 	parameter int V16_RESULT_ADDR_WIDTH = 2,
+	parameter int V17_NUM_EL = 4,
+	parameter int V17_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(V17_NUM_EL),
 	parameter int SPECIAL_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int SPECIAL_RESULT_WIDTH = SPECIAL_ACC_WIDTH + 1,
 	parameter int SPECIAL_ADDR_WIDTH = (NUM_DOT_UNITS <= 1) ? 1 : $clog2(NUM_DOT_UNITS)
@@ -90,6 +92,8 @@ module pe_testbench #(
 	input logic [(NUM_PE*DATA_WIDTH)-1:0] v16_weight_vector,
 	input logic [(NUM_PE*V15_ACC_WIDTH)-1:0] v16_acc_vector,
 	input logic [V16_RESULT_ADDR_WIDTH-1:0] v16_result_addr,
+	input logic v17_start,
+	input logic [V16_RESULT_ADDR_WIDTH-1:0] v17_result_addr,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v0,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v1,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe,
@@ -142,6 +146,12 @@ module pe_testbench #(
 	output logic valid_out_pe_chain_v16,
 	output logic error_out_pe_chain_v16,
 	output logic [NUM_PE-1:0] overflow_out_pe_chain_v16,
+	output logic [(NUM_PE*V17_ACC_WIDTH)-1:0] v17_result_vector,
+	output logic [(NUM_PE*V17_ACC_WIDTH)-1:0] v17_ram_result_vector,
+	output logic busy_v17,
+	output logic done_v17,
+	output logic error_out_v17,
+	output logic [NUM_PE-1:0] overflow_out_v17,
 	output logic signed [SPECIAL_RESULT_WIDTH-1:0] result_vspecial,
 	output logic busy_vspecial,
 	output logic done_vspecial
@@ -163,6 +173,23 @@ module pe_testbench #(
 	logic signed [DATA_WIDTH-1:0] v16_weights [0:NUM_PE-1];
 	logic signed [V15_ACC_WIDTH-1:0] v16_acc [0:NUM_PE-1];
 	logic signed [V15_ACC_WIDTH-1:0] v16_results [0:NUM_PE-1];
+	logic signed [V17_ACC_WIDTH-1:0] v17_results [0:NUM_PE-1];
+	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_0 = 1;
+	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_1 = 2;
+	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_2 = -3;
+	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_3 = 4;
+	localparam logic signed [DATA_WIDTH-1:0] V17_WEIGHT_0 = 5;
+	localparam logic signed [DATA_WIDTH-1:0] V17_WEIGHT_1 = -2;
+	localparam logic signed [DATA_WIDTH-1:0] V17_WEIGHT_2 = 3;
+	localparam logic signed [DATA_WIDTH-1:0] V17_WEIGHT_3 = 1;
+	localparam logic [(4*NUM_PE*DATA_WIDTH)-1:0] V17_DATA_ROM_CONTENT = {
+		{NUM_PE{V17_DATA_3}}, {NUM_PE{V17_DATA_2}},
+		{NUM_PE{V17_DATA_1}}, {NUM_PE{V17_DATA_0}}
+	};
+	localparam logic [(4*NUM_PE*DATA_WIDTH)-1:0] V17_WEIGHT_ROM_CONTENT = {
+		{NUM_PE{V17_WEIGHT_3}}, {NUM_PE{V17_WEIGHT_2}},
+		{NUM_PE{V17_WEIGHT_1}}, {NUM_PE{V17_WEIGHT_0}}
+	};
 
 	pe_v0 #(.DATA_WIDTH(DATA_WIDTH)) v0_dut (.a(a), .b(b), .y(y_v0));
 	pe_v1 #(.DATA_WIDTH(DATA_WIDTH)) v1_dut (.a(a), .b(b), .acc_in(acc_in), .y(y_v1));
@@ -340,6 +367,24 @@ module pe_testbench #(
 		for (genvar v16_index = 0; v16_index < NUM_PE; v16_index++) begin : gen_v16_outputs
 			assign v16_result_vector[(v16_index * V15_ACC_WIDTH) +: V15_ACC_WIDTH] =
 				v16_results[v16_index];
+		end
+	endgenerate
+	pe_system_v17 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(NUM_PE), .NUM_EL(V17_NUM_EL),
+		.ACC_WIDTH(V17_ACC_WIDTH),
+		.DATA_ROM_CONTENT(V17_DATA_ROM_CONTENT),
+		.WEIGHT_ROM_CONTENT(V17_WEIGHT_ROM_CONTENT)
+	) pe_system_v17_dut (
+		.clk(clk), .rst(rst), .start(v17_start), .results(v17_results),
+		.result_read_addr(v17_result_addr),
+		.result_read_data(v17_ram_result_vector),
+		.busy(busy_v17), .done(done_v17), .error_out(error_out_v17),
+		.overflow_out(overflow_out_v17)
+	);
+	generate
+		for (genvar v17_index = 0; v17_index < NUM_PE; v17_index++) begin : gen_v17_outputs
+			assign v17_result_vector[(v17_index * V17_ACC_WIDTH) +: V17_ACC_WIDTH] =
+				v17_results[v17_index];
 		end
 	endgenerate
 	dot_product_chain_vspecial #(

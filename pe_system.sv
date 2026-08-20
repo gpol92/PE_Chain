@@ -182,6 +182,125 @@ module pe_chain_v11 #(
 endmodule
 
 
+// V17 reads one packed operand vector per cycle from two fixed ROMs. A start
+// pulse begins at address zero; the existing V16 engine computes one
+// independent NUM_EL-element dot product in every PE lane and stores the
+// completed result vector in RAM.
+module pe_system_v17 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 4,
+	parameter int NUM_EL = 4,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_EL),
+	parameter int ROM_ADDR_WIDTH = (NUM_EL <= 1) ? 1 : $clog2(NUM_EL),
+	parameter int VECTOR_WIDTH = DATA_WIDTH * NUM_PE,
+	parameter int ROM_CONTENT_WIDTH = VECTOR_WIDTH * (1 << ROM_ADDR_WIDTH),
+	parameter int RESULT_ADDR_WIDTH = 2,
+	parameter int RESULT_VECTOR_WIDTH = NUM_PE * ACC_WIDTH,
+	parameter logic [ROM_CONTENT_WIDTH-1:0] DATA_ROM_CONTENT = '0,
+	parameter logic [ROM_CONTENT_WIDTH-1:0] WEIGHT_ROM_CONTENT = '0
+)(
+	input logic clk,
+	input logic rst,
+	input logic start,
+	input logic [RESULT_ADDR_WIDTH-1:0] result_read_addr,
+	output logic signed [ACC_WIDTH-1:0] results [0:NUM_PE-1],
+	output logic [RESULT_VECTOR_WIDTH-1:0] result_read_data,
+	output logic busy,
+	output logic done,
+	output logic error_out,
+	output logic [NUM_PE-1:0] overflow_out
+);
+	logic [ROM_ADDR_WIDTH-1:0] rom_addr;
+	logic feeding;
+	logic storage_valid;
+	logic [VECTOR_WIDTH-1:0] data_vector;
+	logic [VECTOR_WIDTH-1:0] weight_vector;
+	logic signed [DATA_WIDTH-1:0] data [0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] weights [0:NUM_PE-1];
+	logic signed [ACC_WIDTH-1:0] initial_accumulators [0:NUM_PE-1];
+
+	simple_rom #(
+		.DATA_WIDTH(VECTOR_WIDTH),
+		.ADDR_WIDTH(ROM_ADDR_WIDTH),
+		.CONTENT(DATA_ROM_CONTENT)
+	) data_rom (
+		.read_addr(rom_addr),
+		.read_data(data_vector)
+	);
+
+	simple_rom #(
+		.DATA_WIDTH(VECTOR_WIDTH),
+		.ADDR_WIDTH(ROM_ADDR_WIDTH),
+		.CONTENT(WEIGHT_ROM_CONTENT)
+	) weight_rom (
+		.read_addr(rom_addr),
+		.read_data(weight_vector)
+	);
+
+	genvar pe_index;
+	generate
+		for (pe_index = 0; pe_index < NUM_PE; pe_index++) begin : gen_rom_lanes
+			assign data[pe_index] =
+				data_vector[(pe_index * DATA_WIDTH) +: DATA_WIDTH];
+			assign weights[pe_index] =
+				weight_vector[(pe_index * DATA_WIDTH) +: DATA_WIDTH];
+			assign initial_accumulators[pe_index] = '0;
+		end
+	endgenerate
+
+	pe_chain_v16 #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.NUM_PE(NUM_PE),
+		.NUM_EL(NUM_EL),
+		.ACC_WIDTH(ACC_WIDTH),
+		.RESULT_ADDR_WIDTH(RESULT_ADDR_WIDTH),
+		.RESULT_VECTOR_WIDTH(RESULT_VECTOR_WIDTH)
+	) compute_engine (
+		.clk(clk),
+		.rst(rst),
+		.valid_in(feeding),
+		.a(data),
+		.b(weights),
+		.acc_in(initial_accumulators),
+		.result_read_addr(result_read_addr),
+		.results(results),
+		.result_read_data(result_read_data),
+		.valid_out(storage_valid),
+		.error_out(error_out),
+		.overflow_out(overflow_out)
+	);
+
+	always_ff @(posedge clk) begin
+		if (rst) begin
+			rom_addr <= '0;
+			feeding <= 1'b0;
+			busy <= 1'b0;
+			done <= 1'b0;
+		end else if (!busy) begin
+			done <= 1'b0;
+			if (start) begin
+				rom_addr <= '0;
+				feeding <= 1'b1;
+				busy <= 1'b1;
+			end
+		end else if (feeding) begin
+			done <= 1'b0;
+			if (rom_addr == NUM_EL - 1) begin
+				rom_addr <= '0;
+				feeding <= 1'b0;
+			end else begin
+				rom_addr <= rom_addr + 1'b1;
+			end
+		end else begin
+			// V16 writes its result RAM on this edge, one cycle after the
+			// final ROM word completed the V15 calculation.
+			busy <= 1'b0;
+			done <= 1'b1;
+		end
+	end
+endmodule
+
+
 // V9 controls the RAM-backed datapath with a simple start/done handshake.
 // A request is accepted in IDLE, RUN waits for the pipeline result, and DONE
 // remains asserted while start is high before returning to IDLE.

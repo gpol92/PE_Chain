@@ -25,7 +25,7 @@ REGRESSION_CASES = (
     *((f"V{version} default", (f"--v{version}",)) for version in range(5)),
     *(
         (f"V{version} default", _array_version(f"v{version}"))
-        for version in range(5, 17)
+        for version in range(5, 18)
     ),
     ("VSpecial default", _array_version("vspecial")),
     ("V12 overlap", (*_array_version("v12"), "--overlap")),
@@ -101,6 +101,7 @@ def run_simulation(config: _TestConfig) -> None:
             project_dir / "pe.sv",
             project_dir / "pe_chain.sv",
             project_dir / "simple_ram.sv",
+            project_dir / "simple_rom.sv",
             project_dir / "pe_system.sv",
             project_dir / "pe_special.sv",
             project_dir / "testbench.sv",

@@ -7,8 +7,8 @@ import os
 from dataclasses import dataclass
 
 
-PE_VERSIONS = (*tuple(f"v{version}" for version in range(17)), "vspecial")
-ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 17)), "vspecial")
+PE_VERSIONS = (*tuple(f"v{version}" for version in range(18)), "vspecial")
+ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 18)), "vspecial")
 FLAG_FIELDS = (
     "passed", "positive", "zero", "pechain", "arrays", "calculus", "overlap",
     "overflow", "stream",
@@ -166,7 +166,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         metavar="COUNT",
-        help="Set the number of processing elements for V5-V16 and VSpecial (default: 4)",
+        help="Set the number of processing elements for V5-V17 and VSpecial (default: 4)",
     )
     parser.add_argument(
         "--num-el",
@@ -223,9 +223,9 @@ def parse_config() -> TestConfig:
     if args.num_pe < 1:
         parser.error("--numPE must be at least 1")
     if args.num_pe != 4 and args.version not in (
-        *tuple(f"v{version}" for version in range(5, 17)), "vspecial"
+        *tuple(f"v{version}" for version in range(5, 18)), "vspecial"
     ):
-        parser.error("--numPE is configurable only for V5-V16 and VSpecial")
+        parser.error("--numPE is configurable only for V5-V17 and VSpecial")
     if args.num_el < 1:
         parser.error("--num-el must be at least 1")
     if args.num_el != 4 and args.version not in ("v15", "v16"):

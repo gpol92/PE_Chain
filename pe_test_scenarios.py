@@ -69,6 +69,7 @@ async def run_product_test(dut, config: TestConfig) -> None:
         "v14": run_v14_parallel,
         "v15": run_v15_element_array,
         "v16": run_v16_result_memory,
+        "v17": run_v17_rom_system,
         "vspecial": run_vspecial,
     }.get(config.version, run_combinational)
     await scenario(dut, config)
@@ -591,6 +592,80 @@ async def run_v16_result_memory(dut, config: TestConfig) -> None:
 
     print(
         f"[OK] V16 stored {batch_count} result vector(s) produced by its V15 core"
+    )
+
+
+async def run_v17_rom_system(dut, config: TestConfig) -> None:
+    """Check V17's fixed ROM sequence and start/busy/done control."""
+    result_width = len(dut.v17_result_vector) // config.num_pe
+    partial_results = (5, 1, -8, -4)
+
+    await _reset_dut(dut, inputs=("v17_start", "v17_result_addr"))
+    assert dut.busy_v17.value == 0, "V17 busy was not cleared by reset"
+    assert dut.done_v17.value == 0, "V17 done was not cleared by reset"
+    assert dut.error_out_v17.value == 0, "V17 error was not cleared by reset"
+    assert int(dut.overflow_out_v17.value) == 0, (
+        "V17 overflow map was not cleared by reset"
+    )
+    assert int(dut.v17_result_vector.value) == 0, (
+        "V17 results were not cleared by reset"
+    )
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    dut.v17_start.value = 1
+    await _tick(dut)
+    assert dut.busy_v17.value == 1, "V17 did not accept start"
+    assert dut.done_v17.value == 0, "V17 completed on the start edge"
+
+    await FallingEdge(dut.clk)
+    dut.v17_start.value = 0
+    for element_index, expected in enumerate(partial_results):
+        # A start pulse while busy must not restart the ROM address sequence.
+        if element_index == 1:
+            dut.v17_start.value = 1
+
+        await _tick(dut)
+        assert dut.done_v17.value == 0, (
+            f"V17 completed before storing ROM address {element_index}"
+        )
+        assert dut.busy_v17.value == 1, (
+            f"V17 busy mismatch at ROM address {element_index}"
+        )
+
+        packed_results = int(dut.v17_result_vector.value)
+        for pe_index in range(config.num_pe):
+            actual = signed_truncate(
+                packed_results >> (pe_index * result_width), result_width
+            )
+            assert actual == expected, (
+                f"V17 PE{pe_index} ROM address {element_index} mismatch: "
+                f"got {actual}, expected {expected}"
+            )
+
+        await FallingEdge(dut.clk)
+        dut.v17_start.value = 0
+
+    dut.v17_result_addr.value = 0
+    await _tick(dut)
+    assert dut.busy_v17.value == 0, "V17 remained busy after storing its result"
+    assert dut.done_v17.value == 1, "V17 did not pulse done on the storage edge"
+    assert dut.error_out_v17.value == 0, "V17 reported an unexpected overflow"
+    assert int(dut.overflow_out_v17.value) == 0, (
+        "V17 reported unexpected per-PE overflow bits"
+    )
+    expected_stored = pack_vector((-4,) * config.num_pe, result_width)
+    assert int(dut.v17_ram_result_vector.value) == expected_stored, (
+        "V17 did not retain the ROM calculation in result RAM"
+    )
+
+    await FallingEdge(dut.clk)
+    await _tick(dut)
+    assert dut.busy_v17.value == 0, "V17 became busy without another start"
+    assert dut.done_v17.value == 0, "V17 done was not a one-cycle pulse"
+    print(
+        f"[OK] V17 read four ROM vectors and stored {config.num_pe} "
+        "fixed dot products (-4) in result RAM"
     )
 
 
