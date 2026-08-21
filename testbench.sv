@@ -53,6 +53,7 @@ module pe_testbench #(
 	parameter int V16_RESULT_ADDR_WIDTH = 2,
 	parameter int V17_NUM_EL = 4,
 	parameter int V17_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(V17_NUM_EL),
+	parameter int V18_NUM_PE = 4,
 	parameter int SPECIAL_ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_PE),
 	parameter int SPECIAL_RESULT_WIDTH = SPECIAL_ACC_WIDTH + 1,
 	parameter int SPECIAL_ADDR_WIDTH = (NUM_DOT_UNITS <= 1) ? 1 : $clog2(NUM_DOT_UNITS)
@@ -94,6 +95,8 @@ module pe_testbench #(
 	input logic [V16_RESULT_ADDR_WIDTH-1:0] v16_result_addr,
 	input logic v17_start,
 	input logic [V16_RESULT_ADDR_WIDTH-1:0] v17_result_addr,
+	input logic v18_start,
+	input logic [V16_RESULT_ADDR_WIDTH-1:0] v18_result_addr,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v0,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_v1,
 	output logic signed [(2*DATA_WIDTH)-1:0] y_pe,
@@ -152,6 +155,12 @@ module pe_testbench #(
 	output logic done_v17,
 	output logic error_out_v17,
 	output logic [NUM_PE-1:0] overflow_out_v17,
+	output logic [(V18_NUM_PE*V17_ACC_WIDTH)-1:0] v18_result_vector,
+	output logic [(V18_NUM_PE*V17_ACC_WIDTH)-1:0] v18_ram_result_vector,
+	output logic busy_v18,
+	output logic done_v18,
+	output logic error_out_v18,
+	output logic [V18_NUM_PE-1:0] overflow_out_v18,
 	output logic signed [SPECIAL_RESULT_WIDTH-1:0] result_vspecial,
 	output logic busy_vspecial,
 	output logic done_vspecial
@@ -174,6 +183,7 @@ module pe_testbench #(
 	logic signed [V15_ACC_WIDTH-1:0] v16_acc [0:NUM_PE-1];
 	logic signed [V15_ACC_WIDTH-1:0] v16_results [0:NUM_PE-1];
 	logic signed [V17_ACC_WIDTH-1:0] v17_results [0:NUM_PE-1];
+	logic signed [V17_ACC_WIDTH-1:0] v18_results [0:V18_NUM_PE-1];
 	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_0 = 1;
 	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_1 = 2;
 	localparam logic signed [DATA_WIDTH-1:0] V17_DATA_2 = -3;
@@ -385,6 +395,22 @@ module pe_testbench #(
 		for (genvar v17_index = 0; v17_index < NUM_PE; v17_index++) begin : gen_v17_outputs
 			assign v17_result_vector[(v17_index * V17_ACC_WIDTH) +: V17_ACC_WIDTH] =
 				v17_results[v17_index];
+		end
+	endgenerate
+	pe_system_v18 #(
+		.DATA_WIDTH(DATA_WIDTH), .NUM_PE(V18_NUM_PE), .NUM_EL(V17_NUM_EL),
+		.ACC_WIDTH(V17_ACC_WIDTH), .INSTRUCTION_FILE("instruction.hex")
+	) pe_system_v18_dut (
+		.clk(clk), .rst(rst), .start(v18_start), .results(v18_results),
+		.result_read_addr(v18_result_addr),
+		.result_read_data(v18_ram_result_vector),
+		.busy(busy_v18), .done(done_v18), .error_out(error_out_v18),
+		.overflow_out(overflow_out_v18)
+	);
+	generate
+		for (genvar v18_index = 0; v18_index < V18_NUM_PE; v18_index++) begin : gen_v18_outputs
+			assign v18_result_vector[(v18_index * V17_ACC_WIDTH) +: V17_ACC_WIDTH] =
+				v18_results[v18_index];
 		end
 	endgenerate
 	dot_product_chain_vspecial #(

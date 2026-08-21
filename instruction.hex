@@ -1,0 +1,5 @@
+// V18 instruction format: {weight_vector[31:0], data_vector[31:0]}
+0505050501010101
+fefefefe02020202
+03030303fdfdfdfd
+0101010104040404

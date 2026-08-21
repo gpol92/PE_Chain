@@ -301,6 +301,116 @@ module pe_system_v17 #(
 endmodule
 
 
+// V18 replaces V17's two parameter-backed operand ROMs with one file-backed
+// instruction ROM. Each instruction packs {weight_vector, data_vector}; the
+// low VECTOR_WIDTH bits feed a and the high VECTOR_WIDTH bits feed b.
+module pe_system_v18 #(
+	parameter int DATA_WIDTH = 8,
+	parameter int NUM_PE = 4,
+	parameter int NUM_EL = 4,
+	parameter int ACC_WIDTH = (2 * DATA_WIDTH) + $clog2(NUM_EL),
+	parameter int ROM_ADDR_WIDTH = (NUM_EL <= 1) ? 1 : $clog2(NUM_EL),
+	parameter int VECTOR_WIDTH = DATA_WIDTH * NUM_PE,
+	parameter int INSTRUCTION_WIDTH = 2 * VECTOR_WIDTH,
+	parameter int RESULT_ADDR_WIDTH = 2,
+	parameter int RESULT_VECTOR_WIDTH = NUM_PE * ACC_WIDTH,
+	parameter INSTRUCTION_FILE = "instruction.hex"
+)(
+	input logic clk,
+	input logic rst,
+	input logic start,
+	input logic [RESULT_ADDR_WIDTH-1:0] result_read_addr,
+	output logic signed [ACC_WIDTH-1:0] results [0:NUM_PE-1],
+	output logic [RESULT_VECTOR_WIDTH-1:0] result_read_data,
+	output logic busy,
+	output logic done,
+	output logic error_out,
+	output logic [NUM_PE-1:0] overflow_out
+);
+	logic [ROM_ADDR_WIDTH-1:0] instruction_addr;
+	logic feeding;
+	logic storage_valid;
+	logic [INSTRUCTION_WIDTH-1:0] instruction;
+	logic [VECTOR_WIDTH-1:0] data_vector;
+	logic [VECTOR_WIDTH-1:0] weight_vector;
+	logic signed [DATA_WIDTH-1:0] data [0:NUM_PE-1];
+	logic signed [DATA_WIDTH-1:0] weights [0:NUM_PE-1];
+	logic signed [ACC_WIDTH-1:0] initial_accumulators [0:NUM_PE-1];
+
+	file_rom #(
+		.DATA_WIDTH(INSTRUCTION_WIDTH),
+		.ADDR_WIDTH(ROM_ADDR_WIDTH),
+		.INIT_FILE(INSTRUCTION_FILE)
+	) instruction_rom (
+		.read_addr(instruction_addr),
+		.read_data(instruction)
+	);
+
+	assign data_vector = instruction[0 +: VECTOR_WIDTH];
+	assign weight_vector = instruction[VECTOR_WIDTH +: VECTOR_WIDTH];
+
+	genvar pe_index;
+	generate
+		for (pe_index = 0; pe_index < NUM_PE; pe_index++) begin : gen_instruction_lanes
+			assign data[pe_index] =
+				data_vector[(pe_index * DATA_WIDTH) +: DATA_WIDTH];
+			assign weights[pe_index] =
+				weight_vector[(pe_index * DATA_WIDTH) +: DATA_WIDTH];
+			assign initial_accumulators[pe_index] = '0;
+		end
+	endgenerate
+
+	pe_chain_v16 #(
+		.DATA_WIDTH(DATA_WIDTH),
+		.NUM_PE(NUM_PE),
+		.NUM_EL(NUM_EL),
+		.ACC_WIDTH(ACC_WIDTH),
+		.RESULT_ADDR_WIDTH(RESULT_ADDR_WIDTH),
+		.RESULT_VECTOR_WIDTH(RESULT_VECTOR_WIDTH)
+	) compute_engine (
+		.clk(clk),
+		.rst(rst),
+		.valid_in(feeding),
+		.a(data),
+		.b(weights),
+		.acc_in(initial_accumulators),
+		.result_read_addr(result_read_addr),
+		.results(results),
+		.result_read_data(result_read_data),
+		.valid_out(storage_valid),
+		.error_out(error_out),
+		.overflow_out(overflow_out)
+	);
+
+	always_ff @(posedge clk) begin
+		if (rst) begin
+			instruction_addr <= '0;
+			feeding <= 1'b0;
+			busy <= 1'b0;
+			done <= 1'b0;
+		end else if (!busy) begin
+			done <= 1'b0;
+			if (start) begin
+				instruction_addr <= '0;
+				feeding <= 1'b1;
+				busy <= 1'b1;
+			end
+		end else if (feeding) begin
+			done <= 1'b0;
+			if (instruction_addr == NUM_EL - 1) begin
+				instruction_addr <= '0;
+				feeding <= 1'b0;
+			end else begin
+				instruction_addr <= instruction_addr + 1'b1;
+			end
+		end else begin
+			busy <= 1'b0;
+			done <= 1'b1;
+		end
+	end
+endmodule
+
+
 // V9 controls the RAM-backed datapath with a simple start/done handshake.
 // A request is accepted in IDLE, RUN waits for the pipeline result, and DONE
 // remains asserted while start is high before returning to IDLE.

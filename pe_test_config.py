@@ -7,8 +7,8 @@ import os
 from dataclasses import dataclass
 
 
-PE_VERSIONS = (*tuple(f"v{version}" for version in range(18)), "vspecial")
-ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 18)), "vspecial")
+PE_VERSIONS = (*tuple(f"v{version}" for version in range(19)), "vspecial")
+ARRAY_PIPELINE_VERSIONS = (*tuple(f"v{version}" for version in range(5, 19)), "vspecial")
 FLAG_FIELDS = (
     "passed", "positive", "zero", "pechain", "arrays", "calculus", "overlap",
     "overflow", "stream",

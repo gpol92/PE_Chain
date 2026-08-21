@@ -25,7 +25,7 @@ REGRESSION_CASES = (
     *((f"V{version} default", (f"--v{version}",)) for version in range(5)),
     *(
         (f"V{version} default", _array_version(f"v{version}"))
-        for version in range(5, 18)
+        for version in range(5, 19)
     ),
     ("VSpecial default", _array_version("vspecial")),
     ("V12 overlap", (*_array_version("v12"), "--overlap")),
@@ -115,6 +115,7 @@ def run_simulation(config: _TestConfig) -> None:
         hdl_toplevel="pe_testbench",
         test_module="test_pe",
         extra_env=config.as_environment(),
+        test_dir=project_dir,
     )
     _, failed_tests = get_results(results_file)
     if failed_tests:

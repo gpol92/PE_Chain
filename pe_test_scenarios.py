@@ -70,6 +70,7 @@ async def run_product_test(dut, config: TestConfig) -> None:
         "v15": run_v15_element_array,
         "v16": run_v16_result_memory,
         "v17": run_v17_rom_system,
+        "v18": run_v18_instruction_system,
         "vspecial": run_vspecial,
     }.get(config.version, run_combinational)
     await scenario(dut, config)
@@ -597,6 +598,7 @@ async def run_v16_result_memory(dut, config: TestConfig) -> None:
 
 async def run_v17_rom_system(dut, config: TestConfig) -> None:
     """Check V17's fixed ROM sequence and start/busy/done control."""
+    data_width = len(dut.a)
     result_width = len(dut.v17_result_vector) // config.num_pe
     partial_results = (5, 1, -8, -4)
 
@@ -625,6 +627,23 @@ async def run_v17_rom_system(dut, config: TestConfig) -> None:
         if element_index == 1:
             dut.v17_start.value = 1
 
+        rom_system = dut.pe_system_v17_dut
+        fetched_address = int(rom_system.rom_addr.value)
+        fetched_data_vector = int(rom_system.data_vector.value)
+        fetched_weight_vector = int(rom_system.weight_vector.value)
+        fetched_data = tuple(
+            signed_truncate(
+                fetched_data_vector >> (pe_index * data_width), data_width
+            )
+            for pe_index in range(config.num_pe)
+        )
+        fetched_weights = tuple(
+            signed_truncate(
+                fetched_weight_vector >> (pe_index * data_width), data_width
+            )
+            for pe_index in range(config.num_pe)
+        )
+
         await _tick(dut)
         assert dut.done_v17.value == 0, (
             f"V17 completed before storing ROM address {element_index}"
@@ -643,6 +662,14 @@ async def run_v17_rom_system(dut, config: TestConfig) -> None:
                 f"got {actual}, expected {expected}"
             )
 
+        assert fetched_address == element_index, (
+            f"V17 fetched ROM address {fetched_address}, expected {element_index}"
+        )
+        print(
+            f"[OK] V17 simple_rom instruction {fetched_address}: "
+            f"data={fetched_data}, weights={fetched_weights}"
+        )
+
         await FallingEdge(dut.clk)
         dut.v17_start.value = 0
 
@@ -655,8 +682,18 @@ async def run_v17_rom_system(dut, config: TestConfig) -> None:
         "V17 reported unexpected per-PE overflow bits"
     )
     expected_stored = pack_vector((-4,) * config.num_pe, result_width)
-    assert int(dut.v17_ram_result_vector.value) == expected_stored, (
+    actual_stored = int(dut.v17_ram_result_vector.value)
+    assert actual_stored == expected_stored, (
         "V17 did not retain the ROM calculation in result RAM"
+    )
+    stored_results = tuple(
+        signed_truncate(
+            actual_stored >> (pe_index * result_width), result_width
+        )
+        for pe_index in range(config.num_pe)
+    )
+    print(
+        f"[OK] V17 result RAM address 0: results={stored_results}"
     )
 
     await FallingEdge(dut.clk)
@@ -666,6 +703,103 @@ async def run_v17_rom_system(dut, config: TestConfig) -> None:
     print(
         f"[OK] V17 read four ROM vectors and stored {config.num_pe} "
         "fixed dot products (-4) in result RAM"
+    )
+
+
+async def run_v18_instruction_system(dut, config: TestConfig) -> None:
+    """Check V18's file-backed instruction sequence and stored result."""
+    data_width = len(dut.a)
+    result_width = len(dut.v18_result_vector) // config.num_pe
+    operands = ((1, 5), (2, -2), (-3, 3), (4, 1))
+    partial_results = (5, 1, -8, -4)
+
+    await _reset_dut(dut, inputs=("v18_start", "v18_result_addr"))
+    assert dut.busy_v18.value == 0, "V18 busy was not cleared by reset"
+    assert dut.done_v18.value == 0, "V18 done was not cleared by reset"
+    assert dut.error_out_v18.value == 0, "V18 error was not cleared by reset"
+    assert int(dut.overflow_out_v18.value) == 0, (
+        "V18 overflow map was not cleared by reset"
+    )
+    assert int(dut.v18_result_vector.value) == 0, (
+        "V18 results were not cleared by reset"
+    )
+
+    await FallingEdge(dut.clk)
+    dut.rst.value = 0
+    dut.v18_start.value = 1
+    await _tick(dut)
+    assert dut.busy_v18.value == 1, "V18 did not accept start"
+    assert dut.done_v18.value == 0, "V18 completed on the start edge"
+
+    await FallingEdge(dut.clk)
+    dut.v18_start.value = 0
+    for element_index, ((expected_data, expected_weight), expected_result) in enumerate(
+        zip(operands, partial_results)
+    ):
+        instruction_system = dut.pe_system_v18_dut
+        fetched_address = int(instruction_system.instruction_addr.value)
+        fetched_data_vector = int(instruction_system.data_vector.value)
+        fetched_weight_vector = int(instruction_system.weight_vector.value)
+        fetched_data = tuple(
+            signed_truncate(
+                fetched_data_vector >> (pe_index * data_width), data_width
+            )
+            for pe_index in range(config.num_pe)
+        )
+        fetched_weights = tuple(
+            signed_truncate(
+                fetched_weight_vector >> (pe_index * data_width), data_width
+            )
+            for pe_index in range(config.num_pe)
+        )
+        assert fetched_address == element_index, (
+            f"V18 fetched instruction {fetched_address}, expected {element_index}"
+        )
+        assert fetched_data == (expected_data,) * config.num_pe, (
+            f"V18 instruction {element_index} data mismatch: {fetched_data}"
+        )
+        assert fetched_weights == (expected_weight,) * config.num_pe, (
+            f"V18 instruction {element_index} weights mismatch: {fetched_weights}"
+        )
+
+        await _tick(dut)
+        assert dut.done_v18.value == 0, (
+            f"V18 completed before instruction {element_index} was consumed"
+        )
+        assert dut.busy_v18.value == 1, (
+            f"V18 busy mismatch at instruction {element_index}"
+        )
+        packed_results = int(dut.v18_result_vector.value)
+        for pe_index in range(config.num_pe):
+            actual = signed_truncate(
+                packed_results >> (pe_index * result_width), result_width
+            )
+            assert actual == expected_result, (
+                f"V18 PE{pe_index} instruction {element_index} mismatch: "
+                f"got {actual}, expected {expected_result}"
+            )
+        await FallingEdge(dut.clk)
+
+    dut.v18_result_addr.value = 0
+    await _tick(dut)
+    assert dut.busy_v18.value == 0, "V18 remained busy after storing its result"
+    assert dut.done_v18.value == 1, "V18 did not pulse done on the storage edge"
+    assert dut.error_out_v18.value == 0, "V18 reported an unexpected overflow"
+    assert int(dut.overflow_out_v18.value) == 0, (
+        "V18 reported unexpected per-PE overflow bits"
+    )
+    expected_stored = pack_vector((-4,) * config.num_pe, result_width)
+    assert int(dut.v18_ram_result_vector.value) == expected_stored, (
+        "V18 did not retain the instruction calculation in result RAM"
+    )
+
+    await FallingEdge(dut.clk)
+    await _tick(dut)
+    assert dut.busy_v18.value == 0, "V18 became busy without another start"
+    assert dut.done_v18.value == 0, "V18 done was not a one-cycle pulse"
+    print(
+        f"[OK] V18 executed four instruction.hex words and stored "
+        f"{config.num_pe} fixed dot products (-4) in result RAM"
     )
 
 
